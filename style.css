@@ -385,6 +385,7 @@ table{border-collapse:collapse; width:100%; font-size:0.88rem;}
   background:rgba(18,40,64,0.55);
   display:flex; align-items:center; justify-content:center;
 }
+.loading-overlay[hidden]{display:none;}
 .loading-card{
   background:var(--paper-raised);
   padding:1.8rem 2.2rem;

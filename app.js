@@ -1,0 +1,751 @@
+/* ==========================================================================
+   Relatório de Atendimentos do Cadastro Único — lógica 100% client-side.
+   Nenhum dado sai do navegador: tudo é lido, processado e exportado aqui.
+   ========================================================================== */
+
+(() => {
+  'use strict';
+
+  /* ------------------------------------------------------------------ *
+   * Estado da aplicação
+   * ------------------------------------------------------------------ */
+  const state = {
+    headers: [],
+    rows: [],              // linhas cruas do CSV (objetos)
+    fields: {},             // nomes de coluna detectados (data, cpf, cras, cadastrador, bairro)
+    categoryCols: [],        // [{header, label, key}]
+    crasCanonicalByRaw: new Map(), // raw (trim) -> nome final (sugestão automática)
+    minISO: null,
+    maxISO: null,
+    lastReport: null,
+  };
+
+  const $ = (sel) => document.querySelector(sel);
+  const el = (tag, opts = {}) => Object.assign(document.createElement(tag), opts);
+
+  /* ------------------------------------------------------------------ *
+   * Utilitários de texto / data
+   * ------------------------------------------------------------------ */
+  function stripAccents(s) {
+    return (s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  }
+  function softKey(raw) {
+    return stripAccents(raw || '').trim().toUpperCase().replace(/\s+/g, ' ');
+  }
+  function slug(s) {
+    return stripAccents(s || '')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '_')
+      .replace(/^_+|_+$/g, '') || 'campo';
+  }
+  function digitsOnly(s) {
+    return (s || '').replace(/\D/g, '');
+  }
+  function parseDateFlexible(str) {
+    if (!str) return null;
+    const s = str.trim();
+    let m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+    if (m) return `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`;
+    m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+    if (m) return `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
+    return null;
+  }
+  function formatDateBR(iso) {
+    if (!iso) return '';
+    const [y, mo, d] = iso.split('-');
+    return `${d}/${mo}/${y}`;
+  }
+  function todayBR() {
+    const d = new Date();
+    return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()} às ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  }
+  function levenshtein(a, b) {
+    const m = a.length, n = b.length;
+    if (m === 0) return n;
+    if (n === 0) return m;
+    const dp = new Array(n + 1);
+    for (let j = 0; j <= n; j++) dp[j] = j;
+    for (let i = 1; i <= m; i++) {
+      let prev = dp[0];
+      dp[0] = i;
+      for (let j = 1; j <= n; j++) {
+        const tmp = dp[j];
+        dp[j] = a[i - 1] === b[j - 1]
+          ? prev
+          : 1 + Math.min(prev, dp[j], dp[j - 1]);
+        prev = tmp;
+      }
+    }
+    return dp[n];
+  }
+
+  /* ------------------------------------------------------------------ *
+   * Passo 1 — upload e leitura do arquivo
+   * ------------------------------------------------------------------ */
+  const fileInput = $('#file-input');
+  const dropzone = $('#dropzone');
+  const fileStatus = $('#file-status');
+  const fileError = $('#file-error');
+
+  ['dragover', 'dragenter'].forEach(ev => dropzone.addEventListener(ev, (e) => {
+    e.preventDefault();
+    dropzone.classList.add('is-drag');
+  }));
+  ['dragleave', 'drop'].forEach(ev => dropzone.addEventListener(ev, (e) => {
+    e.preventDefault();
+    dropzone.classList.remove('is-drag');
+  }));
+  dropzone.addEventListener('drop', (e) => {
+    const f = e.dataTransfer.files[0];
+    if (f) handleFile(f);
+  });
+  fileInput.addEventListener('change', (e) => {
+    const f = e.target.files[0];
+    if (f) handleFile(f);
+  });
+
+  function showLoading(text) {
+    $('#loading-text').textContent = text;
+    $('#loading-overlay').hidden = false;
+  }
+  function hideLoading() {
+    $('#loading-overlay').hidden = true;
+  }
+
+  async function handleFile(file) {
+    fileError.hidden = true;
+    fileStatus.hidden = true;
+    $('#dropzone-sub').textContent = file.name;
+
+    const name = file.name.toLowerCase();
+    showLoading('Lendo o arquivo…');
+    try {
+      let csvText;
+      if (name.endsWith('.zip')) {
+        csvText = await extractCsvFromZip(file);
+      } else if (name.endsWith('.csv')) {
+        csvText = await file.text();
+      } else {
+        throw new Error('Formato não reconhecido. Envie um .zip ou um .csv.');
+      }
+      showLoading('Processando as linhas do arquivo…');
+      await new Promise(r => setTimeout(r, 30)); // deixa o overlay pintar antes do parse pesado
+      parseCsvText(csvText);
+    } catch (err) {
+      console.error(err);
+      fileError.textContent = 'Não foi possível ler o arquivo: ' + err.message;
+      fileError.hidden = false;
+    } finally {
+      hideLoading();
+    }
+  }
+
+  async function extractCsvFromZip(file) {
+    const buf = await file.arrayBuffer();
+    const zip = await JSZip.loadAsync(buf);
+    let target = null;
+    zip.forEach((path, entry) => {
+      if (!target && !entry.dir && /\.csv$/i.test(path) && !path.includes('__MACOSX')) {
+        target = entry;
+      }
+    });
+    if (!target) throw new Error('Não encontrei um .csv dentro do .zip.');
+    return target.async('string');
+  }
+
+  function parseCsvText(csvText) {
+    const result = Papa.parse(csvText, {
+      header: true,
+      skipEmptyLines: true,
+      transformHeader: h => h.trim(),
+    });
+    if (!result.data.length) {
+      throw new Error('O arquivo não tem linhas de dados.');
+    }
+    const headers = result.meta.fields;
+
+    // detecta colunas de categoria: "Serviço ofertado [Algo]"
+    const categoryCols = [];
+    headers.forEach(h => {
+      const m = h.match(/\[(.+)\]/);
+      if (m) categoryCols.push({ header: h, label: m[1].trim(), key: slug(m[1]) });
+    });
+
+    const findHeader = (re, fallbackIndex) =>
+      headers.find(h => re.test(h)) || headers[fallbackIndex] || null;
+
+    const fields = {
+      data: findHeader(/data de atendimento/i, 1),
+      cadastrador: findHeader(/cadastrador/i, 2),
+      cpf: findHeader(/cpf/i, 3),
+      bairro: findHeader(/bairro/i, headers.length - 2),
+      cras: findHeader(/cras/i, headers.length - 1),
+    };
+
+    if (!fields.data || !fields.cras) {
+      throw new Error('Não encontrei as colunas de "Data de Atendimento" e/ou "Nome do CRAS" no cabeçalho.');
+    }
+
+    // anota cada linha com id e data normalizada
+    const rows = result.data.map((row, i) => {
+      row.__rowId = i;
+      row.__iso = parseDateFlexible(row[fields.data] || '');
+      return row;
+    });
+
+    state.headers = headers;
+    state.rows = rows;
+    state.fields = fields;
+    state.categoryCols = categoryCols;
+
+    fileStatus.hidden = false;
+    fileStatus.textContent = `${rows.length.toLocaleString('pt-BR')} registros lidos, ${categoryCols.length} categorias de serviço encontradas.`;
+
+    buildCrasClustering();
+    renderCrasReviewTable();
+    setupDateRange();
+
+    $('#step-2').hidden = false;
+    $('#step-3').hidden = false;
+    $('#step-4').hidden = true;
+    $('#step-2').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  /* ------------------------------------------------------------------ *
+   * Passo 2 — agrupamento automático de unidades (CRAS)
+   * ------------------------------------------------------------------ */
+  function buildCrasClustering() {
+    const crasHeader = state.fields.cras;
+
+    // 1) valores distintos exatamente como vieram (só trim externo), com contagem
+    const displayCounts = new Map();
+    state.rows.forEach(row => {
+      const raw = (row[crasHeader] || '').trim();
+      if (!raw) return;
+      displayCounts.set(raw, (displayCounts.get(raw) || 0) + 1);
+    });
+
+    // 2) agrupa por chave "soft" (sem acento, maiúsculas, espaços únicos)
+    const baseGroups = new Map(); // softKey -> {count, bestRaw, bestCount}
+    displayCounts.forEach((count, raw) => {
+      const key = softKey(raw);
+      if (!baseGroups.has(key)) baseGroups.set(key, { count: 0, bestRaw: raw, bestCount: 0 });
+      const g = baseGroups.get(key);
+      g.count += count;
+      if (count > g.bestCount) { g.bestCount = count; g.bestRaw = raw; }
+    });
+
+    // 3) clusteriza chaves "soft" parecidas (erro de digitação) via distância de Levenshtein
+    const keys = [...baseGroups.keys()];
+    const parent = new Map(keys.map(k => [k, k]));
+    const find = (x) => (parent.get(x) === x ? x : (parent.set(x, find(parent.get(x))), parent.get(x)));
+    const union = (a, b) => { const ra = find(a), rb = find(b); if (ra !== rb) parent.set(ra, rb); };
+
+    for (let i = 0; i < keys.length; i++) {
+      for (let j = i + 1; j < keys.length; j++) {
+        const a = keys[i], b = keys[j];
+        if (Math.min(a.length, b.length) < 4) continue; // evita fundir siglas curtas por acaso
+        if (Math.abs(a.length - b.length) > 3) continue; // corta comparação cara e improvável
+        if (levenshtein(a, b) <= 2) union(a, b);
+      }
+    }
+
+    // 4) para cada cluster final, escolhe o nome canônico = variante mais frequente do subgrupo mais frequente
+    const clusterBest = new Map(); // root -> {count, bestRaw, bestCount}
+    keys.forEach(k => {
+      const root = find(k);
+      const g = baseGroups.get(k);
+      if (!clusterBest.has(root)) clusterBest.set(root, { count: 0, bestRaw: g.bestRaw, bestCount: 0 });
+      const c = clusterBest.get(root);
+      c.count += g.count;
+      if (g.bestCount > c.bestCount) { c.bestCount = g.bestCount; c.bestRaw = g.bestRaw; }
+    });
+
+    // 5) monta o mapa final raw -> nome canônico, e guarda metadados para a tabela de revisão
+    const rawToCanonical = new Map();
+    const rowsForTable = [];
+    displayCounts.forEach((count, raw) => {
+      const key = softKey(raw);
+      const root = find(key);
+      const canonical = clusterBest.get(root).bestRaw;
+      rawToCanonical.set(raw, canonical);
+      rowsForTable.push({ raw, count, canonical, clusterId: root });
+    });
+
+    state.crasCanonicalByRaw = rawToCanonical;
+    state._crasReviewRows = rowsForTable.sort((a, b) => b.count - a.count);
+  }
+
+  function renderCrasReviewTable() {
+    const tbody = $('#cras-table tbody');
+    tbody.innerHTML = '';
+    const clusterIndex = new Map();
+    let altToggle = false, lastCluster = null;
+
+    state._crasReviewRows.forEach(r => {
+      if (r.clusterId !== lastCluster) { altToggle = !altToggle; lastCluster = r.clusterId; }
+      const tr = el('tr', { className: altToggle ? 'group-alt' : '' });
+
+      const tdRaw = el('td');
+      tdRaw.textContent = r.raw;
+      const tdCount = el('td', { className: 'count-cell' });
+      tdCount.textContent = r.count.toLocaleString('pt-BR');
+      const tdFinal = el('td');
+      const input = el('input', { type: 'text', value: r.canonical });
+      input.dataset.raw = r.raw;
+      tdFinal.appendChild(input);
+
+      tr.append(tdRaw, tdCount, tdFinal);
+      tbody.appendChild(tr);
+    });
+
+    const uniqueCanonical = new Set(state._crasReviewRows.map(r => r.canonical)).size;
+    $('#cras-summary').innerHTML =
+      `<span><strong>${state._crasReviewRows.length}</strong> variações encontradas no arquivo</span>` +
+      `<span>agrupadas automaticamente em <strong>${uniqueCanonical}</strong> unidades</span>`;
+  }
+
+  function currentCrasMap() {
+    const map = new Map();
+    document.querySelectorAll('#cras-table input[type=text]').forEach(input => {
+      const final = input.value.trim() || input.dataset.raw;
+      map.set(input.dataset.raw, final);
+    });
+    return map;
+  }
+
+  $('#btn-to-step3').addEventListener('click', () => {
+    $('#step-3').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
+
+  /* ------------------------------------------------------------------ *
+   * Passo 3 — período
+   * ------------------------------------------------------------------ */
+  function setupDateRange() {
+    let min = null, max = null;
+    state.rows.forEach(r => {
+      if (!r.__iso) return;
+      if (!min || r.__iso < min) min = r.__iso;
+      if (!max || r.__iso > max) max = r.__iso;
+    });
+    state.minISO = min;
+    state.maxISO = max;
+    $('#date-start').value = min || '';
+    $('#date-end').value = max || '';
+    $('#date-start').min = min || '';
+    $('#date-start').max = max || '';
+    $('#date-end').min = min || '';
+    $('#date-end').max = max || '';
+    $('#date-bounds-hint').textContent = min && max
+      ? `Dados disponíveis de ${formatDateBR(min)} a ${formatDateBR(max)}`
+      : 'Não encontrei datas válidas no arquivo.';
+  }
+
+  $('#btn-generate').addEventListener('click', async () => {
+    const reportError = $('#report-error');
+    reportError.hidden = true;
+    const startISO = $('#date-start').value;
+    const endISO = $('#date-end').value;
+    if (!startISO || !endISO) {
+      reportError.textContent = 'Selecione a data inicial e a data final.';
+      reportError.hidden = false;
+      return;
+    }
+    if (startISO > endISO) {
+      reportError.textContent = 'A data inicial não pode ser depois da data final.';
+      reportError.hidden = false;
+      return;
+    }
+    showLoading('Calculando o relatório…');
+    await new Promise(r => setTimeout(r, 30));
+    try {
+      const crasMap = currentCrasMap();
+      const report = computeReport(startISO, endISO, crasMap);
+      state.lastReport = report;
+      renderReport(report);
+      $('#step-4').hidden = false;
+      $('#step-4').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    } catch (err) {
+      console.error(err);
+      reportError.textContent = 'Erro ao gerar o relatório: ' + err.message;
+      reportError.hidden = false;
+    } finally {
+      hideLoading();
+    }
+  });
+
+  /* ------------------------------------------------------------------ *
+   * Cálculo do relatório
+   * ------------------------------------------------------------------ */
+  function computeReport(startISO, endISO, crasMap) {
+    const { fields, categoryCols } = state;
+    let invalidDate = 0, outOfRange = 0, emptyCPF = 0, unexpectedServiceValues = 0;
+    const inRange = [];
+
+    state.rows.forEach(row => {
+      if (!row.__iso) { invalidDate++; return; }
+      if (row.__iso < startISO || row.__iso > endISO) { outOfRange++; return; }
+      inRange.push(row);
+    });
+
+    const cpfSet = new Set();
+    const catTotals = {};
+    categoryCols.forEach(c => (catTotals[c.key] = 0));
+    const crasStats = new Map(); // nome final -> {cpfSet, atendimentos, cats:{}}
+
+    inRange.forEach(row => {
+      const cpfDigits = digitsOnly(row[fields.cpf] || '');
+      if (!cpfDigits) emptyCPF++;
+      const cpfKey = cpfDigits || ('__semcpf_' + row.__rowId);
+      cpfSet.add(cpfKey);
+
+      const rawCras = (row[fields.cras] || '').trim();
+      const crasFinal = crasMap.get(rawCras) || rawCras || 'NÃO INFORMADO';
+
+      if (!crasStats.has(crasFinal)) crasStats.set(crasFinal, { cpfSet: new Set(), atendimentos: 0, cats: {} });
+      const cs = crasStats.get(crasFinal);
+      cs.atendimentos++;
+      cs.cpfSet.add(cpfKey);
+
+      categoryCols.forEach(c => {
+        const v = (row[c.header] || '').trim();
+        if (!v) return;
+        if (v.toUpperCase() === 'SIM') {
+          catTotals[c.key]++;
+          cs.cats[c.key] = (cs.cats[c.key] || 0) + 1;
+        } else {
+          unexpectedServiceValues++;
+        }
+      });
+    });
+
+    const rowsOrdered = inRange.slice().sort((a, b) => {
+      if (a.__iso !== b.__iso) return a.__iso < b.__iso ? -1 : 1;
+      const ca = crasMap.get((a[fields.cras] || '').trim()) || '';
+      const cb = crasMap.get((b[fields.cras] || '').trim()) || '';
+      return ca.localeCompare(cb, 'pt-BR');
+    });
+
+    return {
+      startISO, endISO,
+      totalCPFs: cpfSet.size,
+      totalAtendimentos: inRange.length,
+      invalidDate, outOfRange, emptyCPF, unexpectedServiceValues,
+      catTotals, crasStats, rowsOrdered,
+      crasMap,
+    };
+  }
+
+  /* ------------------------------------------------------------------ *
+   * Passo 4 — renderização em tela
+   * ------------------------------------------------------------------ */
+  function renderReport(r) {
+    $('#report-period').textContent = `${formatDateBR(r.startISO)} a ${formatDateBR(r.endISO)} · gerado em ${todayBR()}`;
+    $('#stat-cpfs').textContent = r.totalCPFs.toLocaleString('pt-BR');
+    $('#stat-atendimentos').textContent = r.totalAtendimentos.toLocaleString('pt-BR');
+    $('#stat-unidades').textContent = r.crasStats.size.toLocaleString('pt-BR');
+
+    // tabela categorias
+    const catTable = $('#table-categorias');
+    const catRows = state.categoryCols.map(c => [c.label, r.catTotals[c.key] || 0]);
+    catTable.innerHTML = buildTableHTML(
+      ['Categoria de serviço', 'Atendimentos'],
+      catRows,
+      [false, true]
+    );
+
+    // tabela por CRAS
+    const crasNames = [...r.crasStats.keys()].sort((a, b) => a.localeCompare(b, 'pt-BR'));
+    const crasHead = ['Unidade (CRAS)', 'CPFs distintos', 'Atendimentos', ...state.categoryCols.map(c => c.label)];
+    const crasRows = crasNames.map(name => {
+      const cs = r.crasStats.get(name);
+      return [name, cs.cpfSet.size, cs.atendimentos, ...state.categoryCols.map(c => cs.cats[c.key] || 0)];
+    });
+    const totalRow = [
+      'TOTAL', r.totalCPFs, r.totalAtendimentos,
+      ...state.categoryCols.map(c => r.catTotals[c.key] || 0),
+    ];
+    $('#table-cras').innerHTML = buildTableHTML(
+      crasHead, crasRows, crasHead.map((_, i) => i > 0), totalRow
+    );
+
+    // avisos de qualidade de dado
+    const warnings = [];
+    if (r.invalidDate) warnings.push(`${r.invalidDate.toLocaleString('pt-BR')} registro(s) com data ilegível, fora do arquivo original — não entraram no relatório.`);
+    if (r.emptyCPF) warnings.push(`${r.emptyCPF.toLocaleString('pt-BR')} registro(s) sem CPF preenchido — cada um foi contado como um beneficiário à parte, para não misturar pessoas diferentes.`);
+    if (r.unexpectedServiceValues) warnings.push(`${r.unexpectedServiceValues.toLocaleString('pt-BR')} marcação(ões) de serviço com valor inesperado (diferente de "Sim") — não entraram na contagem por categoria.`);
+    const warnBox = $('#report-warnings');
+    if (warnings.length) {
+      warnBox.hidden = false;
+      warnBox.innerHTML = '<strong>Observações sobre os dados:</strong><ul>' + warnings.map(w => `<li>${w}</li>`).join('') + '</ul>';
+    } else {
+      warnBox.hidden = true;
+    }
+  }
+
+  function buildTableHTML(headers, rows, numericCols = [], totalRow = null) {
+    let html = '<thead><tr>' + headers.map((h, i) => `<th class="${numericCols[i] ? 'num' : ''}">${h}</th>`).join('') + '</tr></thead><tbody>';
+    rows.forEach(row => {
+      html += '<tr>' + row.map((v, i) => `<td class="${numericCols[i] ? 'num' : ''}">${typeof v === 'number' ? v.toLocaleString('pt-BR') : v}</td>`).join('') + '</tr>';
+    });
+    if (totalRow) {
+      html += '<tr class="total-row">' + totalRow.map((v, i) => `<td class="${numericCols[i] ? 'num' : ''}">${typeof v === 'number' ? v.toLocaleString('pt-BR') : v}</td>`).join('') + '</tr>';
+    }
+    html += '</tbody>';
+    return html;
+  }
+
+  /* ------------------------------------------------------------------ *
+   * Exportação — XLSX
+   * ------------------------------------------------------------------ */
+  $('#btn-xlsx').addEventListener('click', () => {
+    if (!state.lastReport) return;
+    showLoading('Montando a planilha…');
+    setTimeout(() => {
+      try {
+        exportXLSX(state.lastReport);
+      } finally {
+        hideLoading();
+      }
+    }, 20);
+  });
+
+  function exportXLSX(r) {
+    const wb = XLSX.utils.book_new();
+
+    // --- Resumo ---
+    const resumoAOA = [
+      ['Relatório de Atendimentos do Cadastro Único'],
+      ['Período', `${formatDateBR(r.startISO)} a ${formatDateBR(r.endISO)}`],
+      ['Gerado em', todayBR()],
+      [],
+      ['Beneficiários atendidos (CPFs distintos)', r.totalCPFs],
+      ['Registros de atendimento', r.totalAtendimentos],
+      ['Unidades com atendimento no período', r.crasStats.size],
+      [],
+      ['Categoria de serviço', 'Atendimentos'],
+      ...state.categoryCols.map(c => [c.label, r.catTotals[c.key] || 0]),
+    ];
+    const wsResumo = XLSX.utils.aoa_to_sheet(resumoAOA);
+    wsResumo['!cols'] = [{ wch: 42 }, { wch: 20 }];
+    XLSX.utils.book_append_sheet(wb, wsResumo, 'Resumo');
+
+    // --- Por CRAS ---
+    const crasNames = [...r.crasStats.keys()].sort((a, b) => a.localeCompare(b, 'pt-BR'));
+    const crasHead = ['Unidade (CRAS)', 'CPFs distintos', 'Atendimentos', ...state.categoryCols.map(c => c.label)];
+    const crasAOA = [crasHead];
+    crasNames.forEach(name => {
+      const cs = r.crasStats.get(name);
+      crasAOA.push([name, cs.cpfSet.size, cs.atendimentos, ...state.categoryCols.map(c => cs.cats[c.key] || 0)]);
+    });
+    crasAOA.push(['TOTAL', r.totalCPFs, r.totalAtendimentos, ...state.categoryCols.map(c => r.catTotals[c.key] || 0)]);
+    const wsCras = XLSX.utils.aoa_to_sheet(crasAOA);
+    wsCras['!cols'] = [{ wch: 32 }, { wch: 16 }, { wch: 14 }, ...state.categoryCols.map(() => ({ wch: 14 }))];
+    XLSX.utils.book_append_sheet(wb, wsCras, 'Por CRAS');
+
+    // --- Dados detalhados ---
+    const { fields } = state;
+    const detHead = ['Data de Atendimento', 'Unidade (CRAS)', 'Nome do Cadastrador', 'CPF do Beneficiário', 'Bairro do usuário', ...state.categoryCols.map(c => c.label)];
+    const detAOA = [detHead];
+    r.rowsOrdered.forEach(row => {
+      const rawCras = (row[fields.cras] || '').trim();
+      const crasFinal = r.crasMap.get(rawCras) || rawCras || 'NÃO INFORMADO';
+      detAOA.push([
+        formatDateBR(row.__iso),
+        crasFinal,
+        (row[fields.cadastrador] || '').trim(),
+        (row[fields.cpf] || '').trim(),
+        (row[fields.bairro] || '').trim(),
+        ...state.categoryCols.map(c => ((row[c.header] || '').trim().toUpperCase() === 'SIM' ? 'Sim' : '')),
+      ]);
+    });
+    const wsDet = XLSX.utils.aoa_to_sheet(detAOA);
+    wsDet['!cols'] = [{ wch: 14 }, { wch: 28 }, { wch: 22 }, { wch: 16 }, { wch: 22 }, ...state.categoryCols.map(() => ({ wch: 12 }))];
+    XLSX.utils.book_append_sheet(wb, wsDet, 'Dados detalhados');
+
+    // --- Notas / metodologia ---
+    const notasAOA = [
+      ['Metodologia'],
+      ['"Beneficiários atendidos" conta CPFs distintos no período (uma mesma pessoa atendida mais de uma vez conta uma única vez).'],
+      ['"Atendimentos" e os totais por categoria contam registros (linhas) — um mesmo atendimento pode ter mais de um serviço marcado, então a soma das categorias pode passar do total de atendimentos.'],
+      ['Registros sem CPF preenchido foram contados individualmente como um beneficiário à parte, para não misturar pessoas diferentes sob um mesmo CPF em branco.'],
+      [],
+      ['Agrupamento de unidades (CRAS) usado neste relatório'],
+      ['Valor original no arquivo', 'Unidade final considerada'],
+      ...[...state.crasCanonicalByRaw.keys()].sort().map(raw => {
+        const input = document.querySelector(`#cras-table input[data-raw="${cssEscape(raw)}"]`);
+        const final = input ? input.value.trim() : state.crasCanonicalByRaw.get(raw);
+        return [raw, final || raw];
+      }),
+    ];
+    const wsNotas = XLSX.utils.aoa_to_sheet(notasAOA);
+    wsNotas['!cols'] = [{ wch: 45 }, { wch: 30 }];
+    XLSX.utils.book_append_sheet(wb, wsNotas, 'Notas');
+
+    XLSX.writeFile(wb, `relatorio-atendimentos-${r.startISO}_a_${r.endISO}.xlsx`);
+  }
+
+  function cssEscape(s) {
+    return s.replace(/["\\]/g, '\\$&');
+  }
+
+  /* ------------------------------------------------------------------ *
+   * Exportação — PDF
+   * ------------------------------------------------------------------ */
+  $('#btn-pdf').addEventListener('click', () => {
+    if (!state.lastReport) return;
+    showLoading('Montando o PDF…');
+    setTimeout(() => {
+      try {
+        exportPDF(state.lastReport);
+      } finally {
+        hideLoading();
+      }
+    }, 20);
+  });
+
+  function exportPDF(r) {
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({ unit: 'pt', format: 'a4' });
+    const navy = [27, 58, 92];
+    const mustard = [185, 131, 42];
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const margin = 40;
+
+    // cabeçalho
+    doc.setFillColor(...navy);
+    doc.rect(0, 0, pageWidth, 72, 'F');
+    doc.setFillColor(...mustard);
+    doc.rect(0, 72, pageWidth, 3, 'F');
+    doc.setTextColor(255, 255, 255);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(15);
+    doc.text('Relatório de Atendimentos do Cadastro Único', margin, 32);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(9.5);
+    doc.setTextColor(200, 211, 219);
+    doc.text('Proteção Social Básica · CRAS e Centros de Convivência', margin, 48);
+    doc.text(`Período: ${formatDateBR(r.startISO)} a ${formatDateBR(r.endISO)}   ·   Gerado em ${todayBR()}`, margin, 62);
+
+    let y = 100;
+    doc.setTextColor(35, 40, 43);
+
+    // números principais
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(11);
+    doc.text('Resumo do período', margin, y);
+    y += 18;
+
+    const headline = [
+      ['Beneficiários atendidos (CPFs distintos)', r.totalCPFs.toLocaleString('pt-BR')],
+      ['Registros de atendimento', r.totalAtendimentos.toLocaleString('pt-BR')],
+      ['Unidades com atendimento no período', r.crasStats.size.toLocaleString('pt-BR')],
+    ];
+    doc.autoTable({
+      startY: y,
+      margin: { left: margin, right: margin },
+      body: headline,
+      theme: 'plain',
+      styles: { fontSize: 10, cellPadding: 3 },
+      columnStyles: { 1: { fontStyle: 'bold', halign: 'right' } },
+    });
+    y = doc.lastAutoTable.finalY + 20;
+
+    // por categoria
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(11);
+    doc.text('Por categoria de serviço', margin, y);
+    y += 6;
+    doc.autoTable({
+      startY: y + 6,
+      margin: { left: margin, right: margin },
+      head: [['Categoria de serviço', 'Atendimentos']],
+      body: state.categoryCols.map(c => [c.label, (r.catTotals[c.key] || 0).toLocaleString('pt-BR')]),
+      headStyles: { fillColor: navy, fontSize: 9.5 },
+      styles: { fontSize: 9.5, cellPadding: 4 },
+      columnStyles: { 1: { halign: 'right' } },
+    });
+    y = doc.lastAutoTable.finalY + 24;
+
+    // por CRAS
+    if (y > doc.internal.pageSize.getHeight() - 150) { doc.addPage(); y = 50; }
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(11);
+    doc.text('Por unidade (CRAS)', margin, y);
+    y += 6;
+
+    const crasNames = [...r.crasStats.keys()].sort((a, b) => a.localeCompare(b, 'pt-BR'));
+    const crasHead = ['Unidade (CRAS)', 'CPFs distintos', 'Atendimentos'];
+    const crasBody = crasNames.map(name => {
+      const cs = r.crasStats.get(name);
+      return [name, cs.cpfSet.size.toLocaleString('pt-BR'), cs.atendimentos.toLocaleString('pt-BR')];
+    });
+    crasBody.push(['TOTAL', r.totalCPFs.toLocaleString('pt-BR'), r.totalAtendimentos.toLocaleString('pt-BR')]);
+
+    doc.autoTable({
+      startY: y + 6,
+      margin: { left: margin, right: margin },
+      head: [crasHead],
+      body: crasBody,
+      headStyles: { fillColor: navy, fontSize: 9.5 },
+      styles: { fontSize: 9.5, cellPadding: 4 },
+      columnStyles: { 1: { halign: 'right' }, 2: { halign: 'right' } },
+      didParseCell: (data) => {
+        if (data.row.index === crasBody.length - 1 && data.section === 'body') {
+          data.cell.styles.fontStyle = 'bold';
+          data.cell.styles.fillColor = [234, 241, 236];
+        }
+      },
+    });
+
+    // observações
+    const warnings = [];
+    if (r.invalidDate) warnings.push(`${r.invalidDate} registro(s) com data ilegível não entraram no relatório.`);
+    if (r.emptyCPF) warnings.push(`${r.emptyCPF} registro(s) sem CPF preenchido, contados individualmente.`);
+    if (r.unexpectedServiceValues) warnings.push(`${r.unexpectedServiceValues} marcação(ões) de serviço com valor inesperado, não contadas por categoria.`);
+    if (warnings.length) {
+      let yy = doc.lastAutoTable.finalY + 18;
+      if (yy > doc.internal.pageSize.getHeight() - 80) { doc.addPage(); yy = 50; }
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(9.5);
+      doc.text('Observações sobre os dados', margin, yy);
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(8.5);
+      let ly = yy + 14;
+      warnings.forEach(w => {
+        const lines = doc.splitTextToSize('• ' + w, pageWidth - margin * 2);
+        doc.text(lines, margin, ly);
+        ly += lines.length * 11;
+      });
+    }
+
+    // rodapé com paginação
+    const pageCount = doc.internal.getNumberOfPages();
+    for (let i = 1; i <= pageCount; i++) {
+      doc.setPage(i);
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(8);
+      doc.setTextColor(120, 120, 120);
+      doc.text(`Página ${i} de ${pageCount}`, pageWidth - margin, doc.internal.pageSize.getHeight() - 20, { align: 'right' });
+      doc.text('Contagem de categorias soma marcações; um mesmo atendimento pode ter mais de um serviço marcado.', margin, doc.internal.pageSize.getHeight() - 20);
+    }
+
+    doc.save(`relatorio-atendimentos-${r.startISO}_a_${r.endISO}.pdf`);
+  }
+
+  /* ------------------------------------------------------------------ *
+   * Reiniciar
+   * ------------------------------------------------------------------ */
+  $('#btn-restart').addEventListener('click', () => {
+    state.rows = [];
+    state.lastReport = null;
+    fileInput.value = '';
+    $('#dropzone-sub').textContent = '.zip ou .csv';
+    fileStatus.hidden = true;
+    $('#step-2').hidden = true;
+    $('#step-3').hidden = true;
+    $('#step-4').hidden = true;
+    $('#step-1').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
+
+})();

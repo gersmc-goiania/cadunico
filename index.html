@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Relatório de Atendimentos do Cadastro Único</title>
+<meta name="description" content="Relatórios de atendimentos do Cadastro Único a partir do export do Google Forms">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,500;8..60,600;8..60,700&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div class="paper-texture" aria-hidden="true"></div>
+
+<header class="masthead">
+  <div class="masthead-inner">
+    <div class="crest" aria-hidden="true">
+<!--     <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <rect x="4" y="4" width="40" height="40" rx="3" stroke="currentColor" stroke-width="2"/>
+        <path d="M14 24h20M24 14v20" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        <circle cx="24" cy="24" r="3.5" fill="currentColor"/>
+      </svg>-->
+    </div>
+    <div class="masthead-text">
+      <p class="eyebrow"></p>
+      <h1>Relatório de Atendimentos do Cadastro Único</h1>
+    </div>
+  </div>
+  <p class="masthead-note">Processa o arquivo exportado do formulário inteiramente no seu navegador. Nada é enviado a servidor algum — os dados, inclusive CPFs, não saem deste computador.</p>
+</header>
+
+<main class="ficha-stack">
+
+  <!-- PASSO 1 -->
+  <section class="ficha" id="step-1" data-step="1">
+    <div class="ficha-tab"><span class="ficha-number">01</span><span class="ficha-label">Arquivo</span></div>
+    <div class="ficha-body">
+      <h2>Envie o export do formulário</h2>
+      <p class="hint">Aceita o <strong>.zip</strong> gerado pelo Google Forms/Drive, ou o <strong>.csv</strong> extraído diretamente.</p>
+
+      <label class="dropzone" id="dropzone" for="file-input">
+        <input type="file" id="file-input" accept=".zip,.csv" hidden>
+        <svg class="dropzone-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M12 3v12m0 0-4-4m4 4 4-4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <span class="dropzone-main">Solte o arquivo aqui ou clique para escolher</span>
+        <span class="dropzone-sub" id="dropzone-sub">.zip ou .csv</span>
+      </label>
+
+      <div id="file-status" class="status-line" hidden></div>
+      <div id="file-error" class="status-line status-error" hidden></div>
+    </div>
+  </section>
+
+  <!-- PASSO 2 -->
+  <section class="ficha" id="step-2" data-step="2" hidden>
+    <div class="ficha-tab"><span class="ficha-number">02</span><span class="ficha-label">Unidades</span></div>
+    <div class="ficha-body">
+      <h2>Conferência das unidades (CRAS)</h2>
+      <p class="hint">Os nomes das unidades foram agrupados automaticamente — variações de maiúscula, espaço e pequenos erros de digitação viram um nome único. Confira abaixo; ajuste só o que estiver errado. Isso não trava o passo seguinte.</p>
+      <div id="cras-summary" class="mini-stats"></div>
+      <div class="table-wrap">
+        <table id="cras-table" class="review-table">
+          <thead>
+            <tr>
+              <th>Como veio no arquivo</th>
+              <th>Registros</th>
+              <th>Unidade final (agrupamento automático)</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <button class="btn btn-primary" id="btn-to-step3">Continuar para o período →</button>
+    </div>
+  </section>
+
+  <!-- PASSO 3 -->
+  <section class="ficha" id="step-3" data-step="3" hidden>
+    <div class="ficha-tab"><span class="ficha-number">03</span><span class="ficha-label">Período</span></div>
+    <div class="ficha-body">
+      <h2>Defina o período de análise</h2>
+      <div class="date-range">
+        <label>De
+          <input type="date" id="date-start">
+        </label>
+        <label>Até
+          <input type="date" id="date-end">
+        </label>
+        <span class="date-hint" id="date-bounds-hint"></span>
+      </div>
+      <button class="btn btn-primary" id="btn-generate">Gerar relatório</button>
+      <div id="report-error" class="status-line status-error" hidden></div>
+    </div>
+  </section>
+
+  <!-- PASSO 4 — RESULTADO -->
+  <section class="ficha ficha-report" id="step-4" data-step="4" hidden>
+    <div class="ficha-tab"><span class="ficha-number">04</span><span class="ficha-label">Relatório</span></div>
+    <div class="ficha-body">
+      <div class="report-header">
+        <h2 id="report-title">Resumo do período</h2>
+        <p id="report-period" class="report-period"></p>
+      </div>
+
+      <div class="headline-numbers">
+        <div class="headline-card headline-primary">
+          <span class="headline-value" id="stat-cpfs">—</span>
+          <span class="headline-label">beneficiários atendidos (CPFs distintos)</span>
+        </div>
+        <div class="headline-card">
+          <span class="headline-value" id="stat-atendimentos">—</span>
+          <span class="headline-label">registros de atendimento</span>
+        </div>
+        <div class="headline-card">
+          <span class="headline-value" id="stat-unidades">—</span>
+          <span class="headline-label">unidades com atendimento no período</span>
+        </div>
+      </div>
+
+      <h3 class="section-title">Por categoria de serviço</h3>
+      <p class="hint hint-small">Contagem de atendimentos em que o serviço foi marcado — um mesmo atendimento pode ter mais de um serviço marcado.</p>
+      <div class="table-wrap">
+        <table class="data-table" id="table-categorias"></table>
+      </div>
+
+      <h3 class="section-title">Por unidade (CRAS)</h3>
+      <div class="table-wrap">
+        <table class="data-table" id="table-cras"></table>
+      </div>
+
+      <div id="report-warnings" class="warnings-box" hidden></div>
+
+      <div class="download-row">
+        <button class="btn btn-download" id="btn-xlsx">
+          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 4h11l5 5v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M14 4v5h5" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+          Baixar planilha (.xlsx)
+        </button>
+        <button class="btn btn-download" id="btn-pdf">
+          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 4h11l5 5v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M14 4v5h5" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+          Baixar relatório (.pdf)
+        </button>
+      </div>
+      <p class="hint hint-small">A planilha detalhada (linha a linha, com CPF) vem dentro do .xlsx, na aba "Dados detalhados".</p>
+
+      <button class="btn btn-ghost" id="btn-restart">Processar outro arquivo</button>
+    </div>
+  </section>
+
+</main>
+
+<footer class="site-footer">
+  <p>Ferramenta interna, sem envio de dados a terceiros.</p>
+</footer>
+
+<div id="loading-overlay" class="loading-overlay" hidden>
+  <div class="loading-card">
+    <div class="loading-spinner" aria-hidden="true"></div>
+    <p id="loading-text">Processando…</p>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

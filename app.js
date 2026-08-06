@@ -214,6 +214,15 @@
   /* ------------------------------------------------------------------ *
    * Passo 2 — agrupamento automático de unidades (CRAS)
    * ------------------------------------------------------------------ */
+  // Junções confirmadas manualmente por quem conhece a rede de unidades —
+  // o agrupamento automático por similaridade de texto não arrisca juntar
+  // nomes muito diferentes entre si (ex.: "SEMAS" e "CENTRAL"), então essas
+  // exceções entram aqui, à parte. Para adicionar uma nova junção confirmada,
+  // acrescente um item: { canonical: 'NOME FINAL', match: ['VARIANTE 1', 'VARIANTE 2', ...] }.
+  const MANUAL_MERGES = [
+    { canonical: 'CENTRAL', match: ['CENTRAL', 'POSTO CENTRAL', 'SEMAS'] },
+  ];
+
   function buildCrasClustering() {
     const crasHeader = state.fields.cras;
 
@@ -250,7 +259,20 @@
       }
     }
 
+    // 3b) aplica as junções manuais confirmadas: une os clusters das variantes
+    // listadas, independentemente da distância de texto entre elas
+    const forcedCanonical = new Map(); // root -> nome canônico travado
+    MANUAL_MERGES.forEach(rule => {
+      const matchedKeys = rule.match
+        .map(softKey)
+        .filter(k => baseGroups.has(k));
+      if (matchedKeys.length < 2) return; // nada a unir se o arquivo não tem essas variantes
+      for (let i = 1; i < matchedKeys.length; i++) union(matchedKeys[0], matchedKeys[i]);
+      forcedCanonical.set(find(matchedKeys[0]), rule.canonical);
+    });
+
     // 4) para cada cluster final, escolhe o nome canônico = variante mais frequente do subgrupo mais frequente
+    //    (a menos que o cluster tenha um nome travado por junção manual)
     const clusterBest = new Map(); // root -> {count, bestRaw, bestCount}
     keys.forEach(k => {
       const root = find(k);
@@ -259,6 +281,9 @@
       const c = clusterBest.get(root);
       c.count += g.count;
       if (g.bestCount > c.bestCount) { c.bestCount = g.bestCount; c.bestRaw = g.bestRaw; }
+    });
+    forcedCanonical.forEach((name, root) => {
+      if (clusterBest.has(root)) clusterBest.get(root).bestRaw = name;
     });
 
     // 5) monta o mapa final raw -> nome canônico, e guarda metadados para a tabela de revisão

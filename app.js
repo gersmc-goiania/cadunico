@@ -55,6 +55,25 @@
     const [y, mo, d] = iso.split('-');
     return `${d}/${mo}/${y}`;
   }
+  // Carimbo de data/hora do Google Forms costuma vir como "2025/11/17 4:33:39 PM GMT-3"
+  // ou variações; aqui extraímos só a parte da data (ano-mês-dia), sem hora.
+  function parseCarimboDate(str) {
+    if (!str) return null;
+    const s = str.trim();
+    let m = s.match(/^(\d{4})\/(\d{1,2})\/(\d{1,2})/);
+    if (m) return `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`;
+    m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+    if (m) return `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`;
+    m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+    if (m) return `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
+    return null;
+  }
+  // Diferença em dias (inteiro, sempre positivo) entre duas datas ISO (YYYY-MM-DD).
+  function diffDaysISO(isoA, isoB) {
+    const a = new Date(isoA + 'T00:00:00Z');
+    const b = new Date(isoB + 'T00:00:00Z');
+    return Math.abs(Math.round((b - a) / 86400000));
+  }
   function todayBR() {
     const d = new Date();
     return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()} às ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
@@ -191,8 +210,7 @@
     const rows = result.data.map((row, i) => {
       row.__rowId = i;
       row.__iso = parseDateFlexible(row[fields.data] || '');
-      const carimboMatch = fields.carimbo ? (row[fields.carimbo] || '').trim().match(/^(\d{4})/) : null;
-      row.__carimboYear = carimboMatch ? carimboMatch[1] : null;
+      row.__carimboISO = fields.carimbo ? parseCarimboDate(row[fields.carimbo] || '') : null;
       return row;
     });
 
@@ -351,16 +369,24 @@
   /* ------------------------------------------------------------------ *
    * Passo 3 — conferência de datas (carimbo × data de atendimento)
    * ------------------------------------------------------------------ */
+  // Só vale a pena revisar manualmente quando a distância entre o carimbo e a
+  // data digitada é grande o bastante para indicar erro de digitação (não um
+  // atendimento registrado com um dia ou dois de atraso, o que é normal).
+  const DATE_REVIEW_THRESHOLD_DAYS = 180;
+
   function buildDatesReview() {
     const { fields } = state;
     const flagged = [];
     state.rows.forEach(row => {
       if (!fields.carimbo) return; // arquivo sem coluna de carimbo: não há o que comparar
-      if (!row.__carimboYear) return; // carimbo ilegível: não dá para comparar, não bloqueia nada
+      if (!row.__carimboISO) return; // carimbo ilegível: não dá para comparar, não bloqueia nada
       if (!row.__iso) {
         flagged.push({ row, reason: 'Data ilegível' });
-      } else if (row.__iso.slice(0, 4) !== row.__carimboYear) {
-        flagged.push({ row, reason: 'Ano diferente do carimbo' });
+      } else {
+        const diff = diffDaysISO(row.__carimboISO, row.__iso);
+        if (diff > DATE_REVIEW_THRESHOLD_DAYS) {
+          flagged.push({ row, reason: `${diff.toLocaleString('pt-BR')} dias de diferença do carimbo` });
+        }
       }
     });
     state._datesFlagged = flagged;

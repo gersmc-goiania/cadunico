@@ -206,11 +206,27 @@
       throw new Error('Não encontrei as colunas de "Data de Atendimento" e/ou "Nome do CRAS" no cabeçalho.');
     }
 
-    // anota cada linha com id, data normalizada e ano do carimbo (para conferência de datas)
+    // anota cada linha com id, data normalizada e data do carimbo (para conferência de datas)
     const rows = result.data.map((row, i) => {
       row.__rowId = i;
       row.__iso = parseDateFlexible(row[fields.data] || '');
       row.__carimboISO = fields.carimbo ? parseCarimboDate(row[fields.carimbo] || '') : null;
+      row.__autoCorrigidoAno = false;
+
+      // Caso muito comum de erro de digitação: dia e mês corretos, só o ano errado
+      // (ex.: começo de ano, o usuário ainda "vive" no ano anterior). Quando dia e mês
+      // da "Data de Atendimento" batem exatamente com os do carimbo e só o ano diverge,
+      // corrige sozinho para o ano do carimbo — não precisa ir para a conferência manual.
+      if (row.__iso && row.__carimboISO) {
+        const diaMesAtendimento = row.__iso.slice(5);   // "MM-DD"
+        const diaMesCarimbo = row.__carimboISO.slice(5); // "MM-DD"
+        const anoAtendimento = row.__iso.slice(0, 4);
+        const anoCarimbo = row.__carimboISO.slice(0, 4);
+        if (diaMesAtendimento === diaMesCarimbo && anoAtendimento !== anoCarimbo) {
+          row.__iso = anoCarimbo + row.__iso.slice(4); // troca só o ano, mantém "-MM-DD"
+          row.__autoCorrigidoAno = true;
+        }
+      }
       return row;
     });
 
@@ -391,8 +407,13 @@
     });
     state._datesFlagged = flagged;
 
+    const autoCorrigidos = state.rows.filter(r => r.__autoCorrigidoAno).length;
+    const autoCorrigidosMsg = autoCorrigidos
+      ? ` <span><strong>${autoCorrigidos.toLocaleString('pt-BR')}</strong> tiveram só o ano corrigido automaticamente (dia e mês já batiam com o carimbo)</span>`
+      : '';
+
     $('#dates-summary').innerHTML = fields.carimbo
-      ? `<span><strong>${flagged.length.toLocaleString('pt-BR')}</strong> de <strong>${state.rows.length.toLocaleString('pt-BR')}</strong> registros com possível problema de data</span>`
+      ? `<span><strong>${flagged.length.toLocaleString('pt-BR')}</strong> de <strong>${state.rows.length.toLocaleString('pt-BR')}</strong> registros com possível problema de data</span>${autoCorrigidosMsg}`
       : `<span>Não encontrei a coluna "Carimbo de data/hora" neste arquivo — não foi possível conferir.</span>`;
 
     const wrap = $('#dates-table-wrap');

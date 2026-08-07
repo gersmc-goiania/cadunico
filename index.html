@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Relatório de Atendimentos do Cadastro Único</title>
-<meta name="description" content="Relatórios de atendimentos do Cadastro Único a partir do export do Google Forms">
+<title>Relatório de Atendimentos · CRAS</title>
+<meta name="description" content="Gera relatórios de atendimentos do Cadastro Único a partir do export do Google Forms, direto no navegador.">
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -19,14 +19,14 @@
 <header class="masthead">
   <div class="masthead-inner">
     <div class="crest" aria-hidden="true">
-<!--     <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
         <rect x="4" y="4" width="40" height="40" rx="3" stroke="currentColor" stroke-width="2"/>
         <path d="M14 24h20M24 14v20" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
         <circle cx="24" cy="24" r="3.5" fill="currentColor"/>
-      </svg>-->
+      </svg>
     </div>
     <div class="masthead-text">
-      <p class="eyebrow"></p>
+      <p class="eyebrow">Proteção Social Básica · CRAS &amp; Centros de Convivência</p>
       <h1>Relatório de Atendimentos do Cadastro Único</h1>
     </div>
   </div>
@@ -75,13 +75,40 @@
           <tbody></tbody>
         </table>
       </div>
-      <button class="btn btn-primary" id="btn-to-step3">Continuar para o período →</button>
+      <button class="btn btn-primary" id="btn-to-step3">Continuar para conferência de datas →</button>
     </div>
   </section>
 
-  <!-- PASSO 3 -->
+  <!-- PASSO 3 — CONFERÊNCIA DE DATAS -->
   <section class="ficha" id="step-3" data-step="3" hidden>
-    <div class="ficha-tab"><span class="ficha-number">03</span><span class="ficha-label">Período</span></div>
+    <div class="ficha-tab"><span class="ficha-number">03</span><span class="ficha-label">Datas</span></div>
+    <div class="ficha-body">
+      <h2>Conferência de datas</h2>
+      <p class="hint">Comparei o ano do carimbo de data/hora (quando o formulário foi enviado) com o ano da "Data de Atendimento" digitada à mão. Quando os anos são diferentes, é provável erro de digitação. Confira e corrija o que precisar — quem não mexer em nada mantém a data original.</p>
+      <div id="dates-summary" class="mini-stats"></div>
+      <div id="dates-empty" class="status-line" hidden>Nenhuma data suspeita encontrada — pode seguir direto para o período.</div>
+      <div class="table-wrap" id="dates-table-wrap" hidden>
+        <table id="dates-table" class="review-table">
+          <thead>
+            <tr>
+              <th>Motivo</th>
+              <th>Carimbo de data/hora</th>
+              <th>Data de Atendimento (original)</th>
+              <th>CRAS</th>
+              <th>Cadastrador</th>
+              <th>Corrigir para</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <button class="btn btn-primary" id="btn-to-step4">Continuar para o período →</button>
+    </div>
+  </section>
+
+  <!-- PASSO 4 -->
+  <section class="ficha" id="step-4" data-step="4" hidden>
+    <div class="ficha-tab"><span class="ficha-number">04</span><span class="ficha-label">Período</span></div>
     <div class="ficha-body">
       <h2>Defina o período de análise</h2>
       <div class="date-range">
@@ -98,11 +125,12 @@
     </div>
   </section>
 
-  <!-- PASSO 4 — RESULTADO -->
-  <section class="ficha ficha-report" id="step-4" data-step="4" hidden>
-    <div class="ficha-tab"><span class="ficha-number">04</span><span class="ficha-label">Relatório</span></div>
+  <!-- PASSO 5 — RESULTADO -->
+  <section class="ficha ficha-report" id="step-5" data-step="5" hidden>
+    <div class="ficha-tab"><span class="ficha-number">05</span><span class="ficha-label">Relatório</span></div>
     <div class="ficha-body">
       <div class="report-header">
+
         <h2 id="report-title">Resumo do período</h2>
         <p id="report-period" class="report-period"></p>
       </div>
@@ -154,7 +182,7 @@
 </main>
 
 <footer class="site-footer">
-  <p>Ferramenta interna, sem envio de dados a terceiros.</p>
+  <p>Gerência de Proteção Social de Média Complexidade · ferramenta interna, sem envio de dados a terceiros.</p>
 </footer>
 
 <div id="loading-overlay" class="loading-overlay" hidden>

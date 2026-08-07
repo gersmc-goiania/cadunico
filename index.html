@@ -85,6 +85,9 @@
     <div class="ficha-body">
       <h2>Conferência de datas</h2>
       <p class="hint">Correlação entre o dado contido no carimbo de data/hora (quando o formulário foi enviado) com a "Data de Atendimento" digitada à mão. Quando o dia e o mês corresponde com os do carimbo e apenas o ano é divergente, a correção é feita automaticamente. Aparecem na lista abaixo os casos com mais de 180 dias de diferença entre as duas datas; divergências pequenas (atendimento lançado com alguns dias de atraso, por exemplo) são normais e não entram na lista.</p>
+      <div class="top-action">
+        <button class="btn btn-primary" id="btn-to-step4-top">Pular esta etapa e ir para o período →</button>
+      </div>
       <div id="dates-summary" class="mini-stats"></div>
       <div id="dates-empty" class="status-line" hidden>Nenhuma data suspeita encontrada.</div>
       <div class="table-wrap" id="dates-table-wrap" hidden>
@@ -110,7 +113,22 @@
   <section class="ficha" id="step-4" data-step="4" hidden>
     <div class="ficha-tab"><span class="ficha-number">04</span><span class="ficha-label">Período</span></div>
     <div class="ficha-body">
-      <h2>Defina o período de análise</h2>
+      <h2>Defina o relatório</h2>
+      <div class="date-range">
+        <label>Tipo de relatório
+          <select id="report-type">
+            <option value="geral">Geral (todas as unidades)</option>
+            <option value="cadastrador">Por cadastrador</option>
+            <option value="unidade">Por unidade (CRAS)</option>
+          </select>
+        </label>
+        <label id="cadastrador-select-wrap" hidden>Cadastrador
+          <select id="report-cadastrador"></select>
+        </label>
+        <label id="unidade-select-wrap" hidden>Unidade (CRAS)
+          <select id="report-unidade"></select>
+        </label>
+      </div>
       <div class="date-range">
         <label>De
           <input type="date" id="date-start">

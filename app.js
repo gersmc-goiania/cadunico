@@ -451,8 +451,9 @@
     });
   }
 
-  $('#btn-to-step4').addEventListener('click', () => {
+  function goToStep4() {
     // aplica as correções feitas na tela de datas diretamente nas linhas
+    // (se o usuário pulou a etapa sem mexer em nada, isso não muda nada)
     document.querySelectorAll('#dates-table input[type=date]').forEach(input => {
       const rowId = Number(input.dataset.rowid);
       const row = state.rows[rowId];
@@ -460,9 +461,35 @@
       row.__iso = input.value || null; // vazio = mantém fora do relatório (data inválida)
     });
     setupDateRange();
+    populateReportFilters();
+    updateReportTypeUI();
     $('#step-4').hidden = false;
     $('#step-4').scrollIntoView({ behavior: 'smooth', block: 'start' });
-  });
+  }
+  $('#btn-to-step4').addEventListener('click', goToStep4);
+  $('#btn-to-step4-top').addEventListener('click', goToStep4);
+
+  /* ------------------------------------------------------------------ *
+   * Passo 4 — tipo de relatório (Geral / por cadastrador / por unidade)
+   * ------------------------------------------------------------------ */
+  function fillSelect(select, values) {
+    select.innerHTML = '';
+    values.forEach(v => select.appendChild(el('option', { value: v, textContent: v })));
+  }
+  function populateReportFilters() {
+    const crasMap = currentCrasMap();
+    const unidades = [...new Set([...crasMap.values()])].sort((a, b) => a.localeCompare(b, 'pt-BR'));
+    const cadastradores = [...new Set(state.rows.map(r => (r[state.fields.cadastrador] || '').trim()).filter(Boolean))]
+      .sort((a, b) => a.localeCompare(b, 'pt-BR'));
+    fillSelect($('#report-unidade'), unidades);
+    fillSelect($('#report-cadastrador'), cadastradores);
+  }
+  function updateReportTypeUI() {
+    const type = $('#report-type').value;
+    $('#cadastrador-select-wrap').hidden = type !== 'cadastrador';
+    $('#unidade-select-wrap').hidden = type !== 'unidade';
+  }
+  $('#report-type').addEventListener('change', updateReportTypeUI);
   function setupDateRange() {
     let min = null, max = null;
     state.rows.forEach(r => {
@@ -498,11 +525,20 @@
       reportError.hidden = false;
       return;
     }
+    const reportType = $('#report-type').value;
+    const filter = { type: reportType };
+    if (reportType === 'cadastrador') filter.value = $('#report-cadastrador').value;
+    if (reportType === 'unidade') filter.value = $('#report-unidade').value;
+    if ((reportType === 'cadastrador' || reportType === 'unidade') && !filter.value) {
+      reportError.textContent = 'Selecione um ' + (reportType === 'cadastrador' ? 'cadastrador' : 'unidade') + '.';
+      reportError.hidden = false;
+      return;
+    }
     showLoading('Calculando o relatório…');
     await new Promise(r => setTimeout(r, 30));
     try {
       const crasMap = currentCrasMap();
-      const report = computeReport(startISO, endISO, crasMap);
+      const report = computeReport(startISO, endISO, crasMap, filter);
       state.lastReport = report;
       renderReport(report);
       $('#step-5').hidden = false;
@@ -519,16 +555,28 @@
   /* ------------------------------------------------------------------ *
    * Cálculo do relatório
    * ------------------------------------------------------------------ */
-  function computeReport(startISO, endISO, crasMap) {
+  function computeReport(startISO, endISO, crasMap, filter = { type: 'geral' }) {
     const { fields, categoryCols } = state;
     let invalidDate = 0, outOfRange = 0, emptyCPF = 0, unexpectedServiceValues = 0;
-    const inRange = [];
+    const inRangeAll = [];
 
     state.rows.forEach(row => {
       if (!row.__iso) { invalidDate++; return; }
       if (row.__iso < startISO || row.__iso > endISO) { outOfRange++; return; }
-      inRange.push(row);
+      inRangeAll.push(row);
     });
+
+    // filtro adicional do tipo de relatório (por cadastrador ou por unidade)
+    let inRange = inRangeAll;
+    if (filter.type === 'cadastrador') {
+      inRange = inRangeAll.filter(row => (row[fields.cadastrador] || '').trim() === filter.value);
+    } else if (filter.type === 'unidade') {
+      inRange = inRangeAll.filter(row => {
+        const rawCras = (row[fields.cras] || '').trim();
+        const crasFinal = crasMap.get(rawCras) || rawCras || 'NÃO INFORMADO';
+        return crasFinal === filter.value;
+      });
+    }
 
     const cpfSet = new Set();
     const catTotals = {};
@@ -575,13 +623,27 @@
       invalidDate, outOfRange, emptyCPF, unexpectedServiceValues,
       catTotals, crasStats, rowsOrdered,
       crasMap,
+      filter,
     };
+  }
+
+  // Texto amigável do filtro aplicado, para título de tela, PDF, XLSX e nome de arquivo.
+  function reportTypeLabel(filter) {
+    if (filter.type === 'cadastrador') return `Cadastrador: ${filter.value}`;
+    if (filter.type === 'unidade') return `Unidade: ${filter.value}`;
+    return 'Geral (todas as unidades)';
+  }
+  function reportTypeSlug(filter) {
+    if (filter.type === 'cadastrador') return `cadastrador-${slug(filter.value)}`;
+    if (filter.type === 'unidade') return `unidade-${slug(filter.value)}`;
+    return 'geral';
   }
 
   /* ------------------------------------------------------------------ *
    * Passo 4 — renderização em tela
    * ------------------------------------------------------------------ */
   function renderReport(r) {
+    $('#report-title').textContent = `Resumo do período — ${reportTypeLabel(r.filter)}`;
     $('#report-period').textContent = `${formatDateBR(r.startISO)} a ${formatDateBR(r.endISO)} · gerado em ${todayBR()}`;
     $('#stat-cpfs').textContent = r.totalCPFs.toLocaleString('pt-BR');
     $('#stat-atendimentos').textContent = r.totalAtendimentos.toLocaleString('pt-BR');
@@ -658,6 +720,7 @@
     // --- Resumo ---
     const resumoAOA = [
       ['Relatório de Atendimentos do Cadastro Único'],
+      ['Tipo de relatório', reportTypeLabel(r.filter)],
       ['Período', `${formatDateBR(r.startISO)} a ${formatDateBR(r.endISO)}`],
       ['Gerado em', todayBR()],
       [],
@@ -724,7 +787,7 @@
     wsNotas['!cols'] = [{ wch: 45 }, { wch: 30 }];
     XLSX.utils.book_append_sheet(wb, wsNotas, 'Notas');
 
-    XLSX.writeFile(wb, `relatorio-atendimentos-${r.startISO}_a_${r.endISO}.xlsx`);
+    XLSX.writeFile(wb, `relatorio-atendimentos-${reportTypeSlug(r.filter)}-${r.startISO}_a_${r.endISO}.xlsx`);
   }
 
   function cssEscape(s) {
@@ -748,7 +811,7 @@
 
   function exportPDF(r) {
     const { jsPDF } = window.jspdf;
-    const doc = new jsPDF({ unit: 'pt', format: 'a4' });
+    const doc = new jsPDF({ unit: 'pt', format: 'a4', orientation: 'landscape' });
     const navy = [27, 58, 92];
     const mustard = [185, 131, 42];
     const pageWidth = doc.internal.pageSize.getWidth();
@@ -767,7 +830,7 @@
     doc.setFontSize(9.5);
     doc.setTextColor(200, 211, 219);
     doc.text('Prefeitura de Goiânia · Proteção Social Básica · CRAS e Centros de Convivência', margin, 48);
-    doc.text(`Período: ${formatDateBR(r.startISO)} a ${formatDateBR(r.endISO)}   ·   Gerado em ${todayBR()}`, margin, 62);
+    doc.text(`Relatório: ${reportTypeLabel(r.filter)}   ·   Período: ${formatDateBR(r.startISO)} a ${formatDateBR(r.endISO)}   ·   Gerado em ${todayBR()}`, margin, 62);
 
     let y = 100;
     doc.setTextColor(35, 40, 43);
@@ -817,21 +880,25 @@
     y += 6;
 
     const crasNames = [...r.crasStats.keys()].sort((a, b) => a.localeCompare(b, 'pt-BR'));
-    const crasHead = ['Unidade (CRAS)', 'CPFs distintos', 'Atendimentos'];
+    const crasHead = ['Unidade (CRAS)', 'CPFs distintos', 'Atendimentos', ...state.categoryCols.map(c => c.label)];
     const crasBody = crasNames.map(name => {
       const cs = r.crasStats.get(name);
-      return [name, cs.cpfSet.size.toLocaleString('pt-BR'), cs.atendimentos.toLocaleString('pt-BR')];
+      return [name, cs.cpfSet.size.toLocaleString('pt-BR'), cs.atendimentos.toLocaleString('pt-BR'),
+        ...state.categoryCols.map(c => (cs.cats[c.key] || 0).toLocaleString('pt-BR'))];
     });
-    crasBody.push(['TOTAL', r.totalCPFs.toLocaleString('pt-BR'), r.totalAtendimentos.toLocaleString('pt-BR')]);
+    crasBody.push(['TOTAL', r.totalCPFs.toLocaleString('pt-BR'), r.totalAtendimentos.toLocaleString('pt-BR'),
+      ...state.categoryCols.map(c => (r.catTotals[c.key] || 0).toLocaleString('pt-BR'))]);
+    const crasColumnStyles = {};
+    crasHead.forEach((_, i) => { if (i > 0) crasColumnStyles[i] = { halign: 'right' }; });
 
     doc.autoTable({
       startY: y + 6,
       margin: { left: margin, right: margin },
       head: [crasHead],
       body: crasBody,
-      headStyles: { fillColor: navy, fontSize: 9.5 },
-      styles: { fontSize: 9.5, cellPadding: 4 },
-      columnStyles: { 1: { halign: 'right' }, 2: { halign: 'right' } },
+      headStyles: { fillColor: navy, fontSize: 8.5 },
+      styles: { fontSize: 8.5, cellPadding: 4 },
+      columnStyles: crasColumnStyles,
       didParseCell: (data) => {
         if (data.row.index === crasBody.length - 1 && data.section === 'body') {
           data.cell.styles.fontStyle = 'bold';
@@ -872,7 +939,7 @@
       doc.text('Contagem de categorias soma marcações; um mesmo atendimento pode ter mais de um serviço marcado.', margin, doc.internal.pageSize.getHeight() - 20);
     }
 
-    doc.save(`relatorio-atendimentos-${r.startISO}_a_${r.endISO}.pdf`);
+    doc.save(`relatorio-atendimentos-${reportTypeSlug(r.filter)}-${r.startISO}_a_${r.endISO}.pdf`);
   }
 
   /* ------------------------------------------------------------------ *

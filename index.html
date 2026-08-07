@@ -130,6 +130,24 @@
           <select id="report-unidade"></select>
         </label>
       </div>
+
+      <div id="cadastrador-review-wrap" hidden>
+        <p class="hint hint-small">Nomes de cadastrador com grafia parecida foram agrupados automaticamente (apelidos, sobrenomes abreviados, erros de digitação). Confira só os que foram agrupados — se algum juntou pessoas diferentes por engano, corrija o nome final da linha.</p>
+        <div id="cadastrador-summary" class="mini-stats"></div>
+        <button type="button" class="btn btn-ghost" id="btn-toggle-cadastrador-table">Mostrar agrupamentos</button>
+        <div class="table-wrap" id="cadastrador-table-wrap" hidden>
+          <table id="cadastrador-table" class="review-table">
+            <thead>
+              <tr>
+                <th>Como veio no arquivo</th>
+                <th>Registros</th>
+                <th>Cadastrador final (agrupamento automático)</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
       <div class="date-range">
         <label>De
           <input type="date" id="date-start">

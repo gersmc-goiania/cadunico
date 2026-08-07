@@ -241,6 +241,7 @@
     buildCrasClustering();
     buildCadastradorClustering();
     renderCrasReviewTable();
+    renderCadastradorReviewTable();
 
     $('#step-2').hidden = false;
     $('#step-3').hidden = true;
@@ -396,9 +397,18 @@
   // distância de edição não pega esse caso. Por isso agrupa só pelo par
   // "primeiro nome + primeiro sobrenome" (função cadastradorNameKey acima) e
   // ignora o resto.
+  // Cadastradores variam grafia de duas formas bem diferentes: (1) sobrenomes
+  // do meio abreviados/esquecidos/errados — resolvido reduzindo para "primeiro
+  // nome + primeiro sobrenome" e ignorando o resto; (2) erro de digitação no
+  // próprio primeiro nome ou sobrenome ("andrea"→"andea", "maria"→"amria") —
+  // resolvido com uma segunda passada de agrupamento por similaridade sobre
+  // essa chave já reduzida. O limiar é mais apertado para nome único (sem
+  // sobrenome) porque nomes curtos reais colidem fácil por acaso (Mirna vs.
+  // Miriam, Monica vs. Monca) — juntar por engano é pior que deixar separado.
   function buildCadastradorClustering() {
     const col = state.fields.cadastrador;
-    if (!col) { state.cadastradorCanonicalByRaw = new Map(); return; }
+    if (!col) { state.cadastradorCanonicalByRaw = new Map(); state._cadastradorReviewRows = []; return; }
+
     const displayCounts = new Map();
     state.rows.forEach(row => {
       const raw = (row[col] || '').trim();
@@ -406,21 +416,119 @@
       displayCounts.set(raw, (displayCounts.get(raw) || 0) + 1);
     });
 
-    const groups = new Map(); // nameKey -> {count, bestRaw, bestCount}
+    // etapa 1: reduz cada nome à chave "primeiro nome [+ primeiro sobrenome]"
+    const reduced = new Map(); // nameKey -> {count, bestRaw, bestCount}
     displayCounts.forEach((count, raw) => {
       const key = cadastradorNameKey(raw);
-      if (!groups.has(key)) groups.set(key, { count: 0, bestRaw: raw, bestCount: 0 });
-      const g = groups.get(key);
+      if (!reduced.has(key)) reduced.set(key, { count: 0, bestRaw: raw, bestCount: 0 });
+      const g = reduced.get(key);
       g.count += count;
-      if (count > g.bestCount) { g.bestCount = count; g.bestRaw = raw; } // nome completo mais frequente do grupo vira o rótulo exibido
+      if (count > g.bestCount) { g.bestCount = count; g.bestRaw = raw; }
     });
 
-    const rawToCanonical = new Map();
-    displayCounts.forEach((count, raw) => {
-      rawToCanonical.set(raw, groups.get(cadastradorNameKey(raw)).bestRaw);
+    // etapa 2: agrupamento guloso por centróide sobre as chaves reduzidas,
+    // processando da mais frequente pra menos frequente; limiar depende de a
+    // chave ter 1 palavra (nome sozinho) ou 2+ (nome + sobrenome)
+    const items = [...reduced.entries()].sort((a, b) => b[1].count - a[1].count);
+    const centroids = []; // [{key, bestRaw, bestCount, count}]
+    const keyToCentroid = new Map();
+
+    items.forEach(([key, g]) => {
+      const isSingle = !key.includes(' ');
+      const minLen = isSingle ? 7 : 5;
+      const maxDist = isSingle ? 1 : 2;
+      let bestIdx = -1, bestDist = Infinity;
+      for (let i = 0; i < centroids.length; i++) {
+        const c = centroids[i];
+        if ((!c.key.includes(' ')) !== isSingle) continue; // não compara nome único com nome+sobrenome
+        if (Math.min(key.length, c.key.length) < minLen) continue;
+        if (Math.abs(key.length - c.key.length) > 3) continue;
+        const d = levenshtein(key, c.key);
+        if (d <= maxDist && d < bestDist) { bestIdx = i; bestDist = d; }
+      }
+      if (bestIdx === -1) {
+        centroids.push({ key, bestRaw: g.bestRaw, bestCount: g.bestCount, count: g.count, rawKeys: [key] });
+        keyToCentroid.set(key, centroids.length - 1);
+      } else {
+        const c = centroids[bestIdx];
+        c.count += g.count;
+        c.rawKeys.push(key);
+        if (g.bestCount > c.bestCount) { c.bestCount = g.bestCount; c.bestRaw = g.bestRaw; }
+        keyToCentroid.set(key, bestIdx);
+      }
     });
+
+    // monta o mapa final raw -> nome canônico e as linhas para a tela de conferência
+    // (só entram na conferência os grupos que de fato juntaram mais de um nome
+    // digitado diferente — a maioria dos ~1.800 nomes é só 1 variante, não precisa revisão)
+    const rawToCanonical = new Map();
+    const groupsMultiRaw = new Map(); // centroidIdx -> [{raw, count}]
+    displayCounts.forEach((count, raw) => {
+      const key = cadastradorNameKey(raw);
+      const idx = keyToCentroid.get(key);
+      const canonical = centroids[idx].bestRaw;
+      rawToCanonical.set(raw, canonical);
+      if (!groupsMultiRaw.has(idx)) groupsMultiRaw.set(idx, []);
+      groupsMultiRaw.get(idx).push({ raw, count });
+    });
+
+    const reviewRows = [];
+    groupsMultiRaw.forEach((entries, idx) => {
+      if (entries.length < 2) return; // grupo com 1 variante só: não precisa revisão
+      const canonical = centroids[idx].bestRaw;
+      entries.sort((a, b) => b.count - a.count).forEach(e => {
+        reviewRows.push({ raw: e.raw, count: e.count, canonical, clusterId: idx });
+      });
+    });
+
     state.cadastradorCanonicalByRaw = rawToCanonical;
+    state._cadastradorReviewRows = reviewRows.sort((a, b) => b.count - a.count);
   }
+
+  function renderCadastradorReviewTable() {
+    const wrap = $('#cadastrador-review-wrap');
+    if (!state.fields.cadastrador) { wrap.hidden = true; return; }
+    wrap.hidden = false;
+
+    const rows = state._cadastradorReviewRows;
+    const distinctCadastradores = new Set(state.cadastradorCanonicalByRaw.values()).size;
+    const totalRaw = state.cadastradorCanonicalByRaw.size;
+    $('#cadastrador-summary').innerHTML =
+      `<span><strong>${totalRaw.toLocaleString('pt-BR')}</strong> nomes distintos no arquivo</span>` +
+      `<span>agrupados automaticamente em <strong>${distinctCadastradores.toLocaleString('pt-BR')}</strong> cadastradores</span>` +
+      `<span><strong>${rows.length.toLocaleString('pt-BR')}</strong> linhas envolvidas em algum agrupamento</span>`;
+
+    const tbody = $('#cadastrador-table tbody');
+    tbody.innerHTML = '';
+    let altToggle = false, lastCluster = null;
+    rows.forEach(r => {
+      if (r.clusterId !== lastCluster) { altToggle = !altToggle; lastCluster = r.clusterId; }
+      const tr = el('tr', { className: altToggle ? 'group-alt' : '' });
+      const tdRaw = el('td'); tdRaw.textContent = r.raw;
+      const tdCount = el('td', { className: 'count-cell' }); tdCount.textContent = r.count.toLocaleString('pt-BR');
+      const tdFinal = el('td');
+      const input = el('input', { type: 'text', value: r.canonical });
+      input.dataset.raw = r.raw;
+      tdFinal.appendChild(input);
+      tr.append(tdRaw, tdCount, tdFinal);
+      tbody.appendChild(tr);
+    });
+  }
+
+  function currentCadastradorMap() {
+    const map = new Map(state.cadastradorCanonicalByRaw); // parte do agrupamento automático...
+    document.querySelectorAll('#cadastrador-table input[type=text]').forEach(input => {
+      map.set(input.dataset.raw, input.value.trim() || input.dataset.raw); // ...e aplica por cima as correções manuais
+    });
+    return map;
+  }
+
+  $('#btn-toggle-cadastrador-table').addEventListener('click', (e) => {
+    const tableWrap = $('#cadastrador-table-wrap');
+    const nowHidden = !tableWrap.hidden;
+    tableWrap.hidden = nowHidden;
+    e.target.textContent = nowHidden ? 'Mostrar agrupamentos' : 'Ocultar agrupamentos';
+  });
 
   function renderCrasReviewTable() {
     const tbody = $('#cras-table tbody');
@@ -574,7 +682,7 @@
   function populateReportFilters() {
     const crasMap = currentCrasMap();
     const unidades = [...new Set([...crasMap.values()])].sort((a, b) => a.localeCompare(b, 'pt-BR'));
-    const cadastradores = [...new Set(state.cadastradorCanonicalByRaw.values())].sort((a, b) => a.localeCompare(b, 'pt-BR'));
+    const cadastradores = [...new Set(currentCadastradorMap().values())].sort((a, b) => a.localeCompare(b, 'pt-BR'));
     fillSelect($('#report-unidade'), unidades);
     fillSelect($('#report-cadastrador'), cadastradores);
   }
@@ -582,8 +690,17 @@
     const type = $('#report-type').value;
     $('#cadastrador-select-wrap').hidden = type !== 'cadastrador';
     $('#unidade-select-wrap').hidden = type !== 'unidade';
+    $('#cadastrador-review-wrap').hidden = type !== 'cadastrador' || !state.fields.cadastrador;
   }
   $('#report-type').addEventListener('change', updateReportTypeUI);
+  // reflete correções feitas na tabela de conferência direto na lista de opções do select
+  $('#cadastrador-table').addEventListener('input', () => {
+    const current = $('#report-cadastrador').value;
+    populateReportFilters();
+    if ([...$('#report-cadastrador').options].some(o => o.value === current)) {
+      $('#report-cadastrador').value = current;
+    }
+  });
   function setupDateRange() {
     let min = null, max = null;
     state.rows.forEach(r => {
@@ -632,7 +749,8 @@
     await new Promise(r => setTimeout(r, 30));
     try {
       const crasMap = currentCrasMap();
-      const report = computeReport(startISO, endISO, crasMap, filter);
+      const cadastradorMap = currentCadastradorMap();
+      const report = computeReport(startISO, endISO, crasMap, filter, cadastradorMap);
       state.lastReport = report;
       renderReport(report);
       $('#step-5').hidden = false;
@@ -649,7 +767,7 @@
   /* ------------------------------------------------------------------ *
    * Cálculo do relatório
    * ------------------------------------------------------------------ */
-  function computeReport(startISO, endISO, crasMap, filter = { type: 'geral' }) {
+  function computeReport(startISO, endISO, crasMap, filter = { type: 'geral' }, cadastradorMap = state.cadastradorCanonicalByRaw) {
     const { fields, categoryCols } = state;
     let invalidDate = 0, outOfRange = 0, emptyCPF = 0, unexpectedServiceValues = 0;
     const inRangeAll = [];
@@ -665,7 +783,7 @@
     if (filter.type === 'cadastrador') {
       inRange = inRangeAll.filter(row => {
         const raw = (row[fields.cadastrador] || '').trim();
-        const canon = state.cadastradorCanonicalByRaw.get(raw) || raw;
+        const canon = cadastradorMap.get(raw) || raw;
         return canon === filter.value;
       });
     } else if (filter.type === 'unidade') {

@@ -176,6 +176,7 @@
 
     const fields = {
       data: findHeader(/data de atendimento/i, 1),
+      carimbo: findHeader(/carimbo/i, 0),
       cadastrador: findHeader(/cadastrador/i, 2),
       cpf: findHeader(/cpf/i, 3),
       bairro: findHeader(/bairro/i, headers.length - 2),
@@ -186,10 +187,12 @@
       throw new Error('Não encontrei as colunas de "Data de Atendimento" e/ou "Nome do CRAS" no cabeçalho.');
     }
 
-    // anota cada linha com id e data normalizada
+    // anota cada linha com id, data normalizada e ano do carimbo (para conferência de datas)
     const rows = result.data.map((row, i) => {
       row.__rowId = i;
       row.__iso = parseDateFlexible(row[fields.data] || '');
+      const carimboMatch = fields.carimbo ? (row[fields.carimbo] || '').trim().match(/^(\d{4})/) : null;
+      row.__carimboYear = carimboMatch ? carimboMatch[1] : null;
       return row;
     });
 
@@ -203,11 +206,11 @@
 
     buildCrasClustering();
     renderCrasReviewTable();
-    setupDateRange();
 
     $('#step-2').hidden = false;
-    $('#step-3').hidden = false;
+    $('#step-3').hidden = true;
     $('#step-4').hidden = true;
+    $('#step-5').hidden = true;
     $('#step-2').scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 
@@ -340,12 +343,79 @@
   }
 
   $('#btn-to-step3').addEventListener('click', () => {
+    buildDatesReview();
+    $('#step-3').hidden = false;
     $('#step-3').scrollIntoView({ behavior: 'smooth', block: 'start' });
   });
 
   /* ------------------------------------------------------------------ *
-   * Passo 3 — período
+   * Passo 3 — conferência de datas (carimbo × data de atendimento)
    * ------------------------------------------------------------------ */
+  function buildDatesReview() {
+    const { fields } = state;
+    const flagged = [];
+    state.rows.forEach(row => {
+      if (!fields.carimbo) return; // arquivo sem coluna de carimbo: não há o que comparar
+      if (!row.__carimboYear) return; // carimbo ilegível: não dá para comparar, não bloqueia nada
+      if (!row.__iso) {
+        flagged.push({ row, reason: 'Data ilegível' });
+      } else if (row.__iso.slice(0, 4) !== row.__carimboYear) {
+        flagged.push({ row, reason: 'Ano diferente do carimbo' });
+      }
+    });
+    state._datesFlagged = flagged;
+
+    $('#dates-summary').innerHTML = fields.carimbo
+      ? `<span><strong>${flagged.length.toLocaleString('pt-BR')}</strong> de <strong>${state.rows.length.toLocaleString('pt-BR')}</strong> registros com possível problema de data</span>`
+      : `<span>Não encontrei a coluna "Carimbo de data/hora" neste arquivo — não foi possível conferir.</span>`;
+
+    const wrap = $('#dates-table-wrap');
+    const empty = $('#dates-empty');
+    const tbody = $('#dates-table tbody');
+    tbody.innerHTML = '';
+
+    if (!flagged.length) {
+      wrap.hidden = true;
+      empty.hidden = false;
+      return;
+    }
+    wrap.hidden = false;
+    empty.hidden = true;
+
+    flagged.forEach(({ row, reason }) => {
+      const tr = el('tr');
+      const tdReason = el('td');
+      tdReason.textContent = reason;
+      const tdCarimbo = el('td');
+      tdCarimbo.textContent = (row[fields.carimbo] || '').trim();
+      const tdOriginal = el('td');
+      tdOriginal.textContent = (row[fields.data] || '').trim();
+      const tdCras = el('td');
+      tdCras.textContent = (row[fields.cras] || '').trim();
+      const tdCadastrador = el('td');
+      tdCadastrador.textContent = (row[fields.cadastrador] || '').trim();
+      const tdFix = el('td');
+      const input = el('input', { type: 'date', value: row.__iso || '' });
+      input.dataset.rowid = row.__rowId;
+      tdFix.appendChild(input);
+
+      tr.append(tdReason, tdCarimbo, tdOriginal, tdCras, tdCadastrador, tdFix);
+      tbody.appendChild(tr);
+    });
+  }
+
+  $('#btn-to-step4').addEventListener('click', () => {
+    // aplica as correções feitas na tela de datas diretamente nas linhas
+    document.querySelectorAll('#dates-table input[type=date]').forEach(input => {
+      const rowId = Number(input.dataset.rowid);
+      const row = state.rows[rowId];
+      if (!row) return;
+      row.__iso = input.value || null; // vazio = mantém fora do relatório (data inválida)
+    });
+    setupDateRange();
+    $('#step-4').hidden = false;
+    $('#step-4').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
   function setupDateRange() {
     let min = null, max = null;
     state.rows.forEach(r => {
@@ -388,8 +458,8 @@
       const report = computeReport(startISO, endISO, crasMap);
       state.lastReport = report;
       renderReport(report);
-      $('#step-4').hidden = false;
-      $('#step-4').scrollIntoView({ behavior: 'smooth', block: 'start' });
+      $('#step-5').hidden = false;
+      $('#step-5').scrollIntoView({ behavior: 'smooth', block: 'start' });
     } catch (err) {
       console.error(err);
       reportError.textContent = 'Erro ao gerar o relatório: ' + err.message;
@@ -770,6 +840,7 @@
     $('#step-2').hidden = true;
     $('#step-3').hidden = true;
     $('#step-4').hidden = true;
+    $('#step-5').hidden = true;
     $('#step-1').scrollIntoView({ behavior: 'smooth', block: 'start' });
   });
 

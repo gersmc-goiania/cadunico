@@ -248,6 +248,7 @@ table{border-collapse:collapse; width:100%; font-size:0.88rem;}
   display:flex; flex-direction:column; gap:0.35rem;
   font-size:0.8rem; color:var(--ink-soft); font-family:var(--font-mono);
 }
+.date-range label[hidden]{display:none;}
 .date-range input[type=date],
 .date-range select{
   font-family:var(--font-body);
@@ -297,6 +298,7 @@ table{border-collapse:collapse; width:100%; font-size:0.88rem;}
 }
 .btn-ghost:hover{border-color:var(--navy); color:var(--navy);}
 .btn:disabled{opacity:0.5; cursor:not-allowed;}
+#btn-toggle-dates-table{margin-top:0;}
 
 /* ============================================================
    Report (step 4)

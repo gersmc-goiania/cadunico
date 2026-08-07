@@ -239,6 +239,7 @@
     fileStatus.textContent = `${rows.length.toLocaleString('pt-BR')} registros lidos, ${categoryCols.length} categorias de serviço encontradas.`;
 
     buildCrasClustering();
+    buildCadastradorClustering();
     renderCrasReviewTable();
 
     $('#step-2').hidden = false;
@@ -260,18 +261,20 @@
     { canonical: 'CENTRAL', match: ['CENTRAL', 'POSTO CENTRAL', 'SEMAS'] },
   ];
 
-  function buildCrasClustering() {
-    const crasHeader = state.fields.cras;
+  // Agrupamento "guloso por centróides": cada nome só é comparado com os
+  // representantes JÁ CONSOLIDADOS (processados em ordem de frequência), nunca
+  // encadeado através de outras variantes fracas. Isso evita o problema clássico
+  // do agrupamento transitivo (union-find), em que A~B e B~C faz A e C se
+  // juntarem mesmo sendo bem diferentes entre si (ex.: "MIRNA" e "MONICA" acabando
+  // no mesmo grupo por causa de uma cadeia de erros de digitação de terceiros).
+  // minLenForFuzzy: nomes mais curtos que isso nunca entram em comparação por
+  // similaridade (siglas/nomes curtos têm alto risco de colisão por acaso).
+  // maxDist: distância de Levenshtein máxima entre as chaves para considerar o mesmo nome.
+  function clusterByTextSimilarity(displayCounts, manualMerges = [], opts = {}) {
+    const minLenForFuzzy = opts.minLenForFuzzy ?? 4;
+    const maxDist = opts.maxDist ?? 2;
 
-    // 1) valores distintos exatamente como vieram (só trim externo), com contagem
-    const displayCounts = new Map();
-    state.rows.forEach(row => {
-      const raw = (row[crasHeader] || '').trim();
-      if (!raw) return;
-      displayCounts.set(raw, (displayCounts.get(raw) || 0) + 1);
-    });
-
-    // 2) agrupa por chave "soft" (sem acento, maiúsculas, espaços únicos)
+    // 1) agrupa por chave "soft" (sem acento, maiúsculas, espaços únicos)
     const baseGroups = new Map(); // softKey -> {count, bestRaw, bestCount}
     displayCounts.forEach((count, raw) => {
       const key = softKey(raw);
@@ -281,61 +284,91 @@
       if (count > g.bestCount) { g.bestCount = count; g.bestRaw = raw; }
     });
 
-    // 3) clusteriza chaves "soft" parecidas (erro de digitação) via distância de Levenshtein
-    const keys = [...baseGroups.keys()];
-    const parent = new Map(keys.map(k => [k, k]));
-    const find = (x) => (parent.get(x) === x ? x : (parent.set(x, find(parent.get(x))), parent.get(x)));
-    const union = (a, b) => { const ra = find(a), rb = find(b); if (ra !== rb) parent.set(ra, rb); };
+    // 2) processa da chave mais frequente para a menos frequente; cada uma tenta
+    // "encaixar" num centróide já existente, senão vira um novo centróide
+    const sorted = [...baseGroups.entries()].sort((a, b) => b[1].count - a[1].count);
+    const centroids = []; // [{key, bestRaw, bestCount, count}]
+    const keyToCentroid = new Map(); // softKey -> índice em centroids
 
-    for (let i = 0; i < keys.length; i++) {
-      for (let j = i + 1; j < keys.length; j++) {
-        const a = keys[i], b = keys[j];
-        if (Math.min(a.length, b.length) < 4) continue; // evita fundir siglas curtas por acaso
-        if (Math.abs(a.length - b.length) > 3) continue; // corta comparação cara e improvável
-        if (levenshtein(a, b) <= 2) union(a, b);
+    sorted.forEach(([key, g]) => {
+      let bestIdx = -1, bestDist = Infinity;
+      for (let i = 0; i < centroids.length; i++) {
+        const c = centroids[i];
+        if (Math.min(key.length, c.key.length) < minLenForFuzzy) continue; // nomes curtos: só igualdade exata
+        if (Math.abs(key.length - c.key.length) > 3) continue; // corta comparação cara e improvável
+        const d = levenshtein(key, c.key);
+        if (d <= maxDist && d < bestDist) { bestIdx = i; bestDist = d; }
       }
-    }
+      if (bestIdx === -1) {
+        centroids.push({ key, bestRaw: g.bestRaw, bestCount: g.bestCount, count: g.count });
+        keyToCentroid.set(key, centroids.length - 1);
+      } else {
+        const c = centroids[bestIdx];
+        c.count += g.count;
+        if (g.bestCount > c.bestCount) { c.bestCount = g.bestCount; c.bestRaw = g.bestRaw; }
+        keyToCentroid.set(key, bestIdx);
+      }
+    });
 
-    // 3b) aplica as junções manuais confirmadas: une os clusters das variantes
-    // listadas, independentemente da distância de texto entre elas
-    const forcedCanonical = new Map(); // root -> nome canônico travado
-    MANUAL_MERGES.forEach(rule => {
-      const matchedKeys = rule.match
-        .map(softKey)
-        .filter(k => baseGroups.has(k));
+    // 3) junções manuais confirmadas: força as variantes indicadas a apontar
+    // para o mesmo centróide, com o nome canônico definido na regra
+    manualMerges.forEach(rule => {
+      const matchedKeys = rule.match.map(softKey).filter(k => keyToCentroid.has(k));
       if (matchedKeys.length < 2) return; // nada a unir se o arquivo não tem essas variantes
-      for (let i = 1; i < matchedKeys.length; i++) union(matchedKeys[0], matchedKeys[i]);
-      forcedCanonical.set(find(matchedKeys[0]), rule.canonical);
+      const targetIdx = keyToCentroid.get(matchedKeys[0]);
+      matchedKeys.forEach(k => {
+        const idx = keyToCentroid.get(k);
+        if (idx !== targetIdx) centroids[targetIdx].count += centroids[idx].count;
+        keyToCentroid.set(k, targetIdx);
+      });
+      centroids[targetIdx].bestRaw = rule.canonical;
     });
 
-    // 4) para cada cluster final, escolhe o nome canônico = variante mais frequente do subgrupo mais frequente
-    //    (a menos que o cluster tenha um nome travado por junção manual)
-    const clusterBest = new Map(); // root -> {count, bestRaw, bestCount}
-    keys.forEach(k => {
-      const root = find(k);
-      const g = baseGroups.get(k);
-      if (!clusterBest.has(root)) clusterBest.set(root, { count: 0, bestRaw: g.bestRaw, bestCount: 0 });
-      const c = clusterBest.get(root);
-      c.count += g.count;
-      if (g.bestCount > c.bestCount) { c.bestCount = g.bestCount; c.bestRaw = g.bestRaw; }
-    });
-    forcedCanonical.forEach((name, root) => {
-      if (clusterBest.has(root)) clusterBest.get(root).bestRaw = name;
-    });
-
-    // 5) monta o mapa final raw -> nome canônico, e guarda metadados para a tabela de revisão
+    // 4) monta o mapa final raw -> nome canônico, e metadados para eventual tabela de revisão
     const rawToCanonical = new Map();
-    const rowsForTable = [];
+    const reviewRows = [];
     displayCounts.forEach((count, raw) => {
       const key = softKey(raw);
-      const root = find(key);
-      const canonical = clusterBest.get(root).bestRaw;
+      const idx = keyToCentroid.get(key);
+      const canonical = centroids[idx].bestRaw;
       rawToCanonical.set(raw, canonical);
-      rowsForTable.push({ raw, count, canonical, clusterId: root });
+      reviewRows.push({ raw, count, canonical, clusterId: idx });
     });
 
+    return { rawToCanonical, reviewRows: reviewRows.sort((a, b) => b.count - a.count) };
+  }
+
+  function buildCrasClustering() {
+    const crasHeader = state.fields.cras;
+    const displayCounts = new Map();
+    state.rows.forEach(row => {
+      const raw = (row[crasHeader] || '').trim();
+      if (!raw) return;
+      displayCounts.set(raw, (displayCounts.get(raw) || 0) + 1);
+    });
+    // pool pequeno e conhecido (24 CRAS + algumas unidades administrativas):
+    // pode usar limiar mais permissivo (nomes a partir de 4 letras, distância até 2)
+    const { rawToCanonical, reviewRows } = clusterByTextSimilarity(displayCounts, MANUAL_MERGES, { minLenForFuzzy: 4, maxDist: 2 });
     state.crasCanonicalByRaw = rawToCanonical;
-    state._crasReviewRows = rowsForTable.sort((a, b) => b.count - a.count);
+    state._crasReviewRows = reviewRows;
+  }
+
+  // Cadastradores também variam grafia entre um preenchimento e outro (acento,
+  // caixa, sobrenome abreviado etc.), mas são ~1.800 nomes de pessoas reais — um
+  // limiar permissivo aqui juntaria pessoas diferentes por acaso (ex.: nomes
+  // curtos como "Mirna" e "Monica"). Por isso usa limiar mais conservador:
+  // só considera parecidos nomes com pelo menos 6 letras e distância de 1.
+  function buildCadastradorClustering() {
+    const col = state.fields.cadastrador;
+    if (!col) { state.cadastradorCanonicalByRaw = new Map(); return; }
+    const displayCounts = new Map();
+    state.rows.forEach(row => {
+      const raw = (row[col] || '').trim();
+      if (!raw) return;
+      displayCounts.set(raw, (displayCounts.get(raw) || 0) + 1);
+    });
+    const { rawToCanonical } = clusterByTextSimilarity(displayCounts, [], { minLenForFuzzy: 6, maxDist: 1 });
+    state.cadastradorCanonicalByRaw = rawToCanonical;
   }
 
   function renderCrasReviewTable() {
@@ -418,16 +451,19 @@
 
     const wrap = $('#dates-table-wrap');
     const empty = $('#dates-empty');
+    const toggleBtn = $('#btn-toggle-dates-table');
     const tbody = $('#dates-table tbody');
     tbody.innerHTML = '';
+    wrap.hidden = true; // a tabela começa sempre oculta; só aparece se o usuário pedir
 
     if (!flagged.length) {
-      wrap.hidden = true;
       empty.hidden = false;
+      toggleBtn.hidden = true;
       return;
     }
-    wrap.hidden = false;
     empty.hidden = true;
+    toggleBtn.hidden = false;
+    toggleBtn.textContent = `Mostrar detalhes das datas (${flagged.length.toLocaleString('pt-BR')})`;
 
     flagged.forEach(({ row, reason }) => {
       const tr = el('tr');
@@ -450,6 +486,14 @@
       tbody.appendChild(tr);
     });
   }
+
+  $('#btn-toggle-dates-table').addEventListener('click', () => {
+    const wrap = $('#dates-table-wrap');
+    const btn = $('#btn-toggle-dates-table');
+    wrap.hidden = !wrap.hidden;
+    const count = (state._datesFlagged || []).length.toLocaleString('pt-BR');
+    btn.textContent = wrap.hidden ? `Mostrar detalhes das datas (${count})` : `Ocultar detalhes das datas (${count})`;
+  });
 
   function goToStep4() {
     // aplica as correções feitas na tela de datas diretamente nas linhas
@@ -479,8 +523,7 @@
   function populateReportFilters() {
     const crasMap = currentCrasMap();
     const unidades = [...new Set([...crasMap.values()])].sort((a, b) => a.localeCompare(b, 'pt-BR'));
-    const cadastradores = [...new Set(state.rows.map(r => (r[state.fields.cadastrador] || '').trim()).filter(Boolean))]
-      .sort((a, b) => a.localeCompare(b, 'pt-BR'));
+    const cadastradores = [...new Set(state.cadastradorCanonicalByRaw.values())].sort((a, b) => a.localeCompare(b, 'pt-BR'));
     fillSelect($('#report-unidade'), unidades);
     fillSelect($('#report-cadastrador'), cadastradores);
   }
@@ -569,7 +612,11 @@
     // filtro adicional do tipo de relatório (por cadastrador ou por unidade)
     let inRange = inRangeAll;
     if (filter.type === 'cadastrador') {
-      inRange = inRangeAll.filter(row => (row[fields.cadastrador] || '').trim() === filter.value);
+      inRange = inRangeAll.filter(row => {
+        const raw = (row[fields.cadastrador] || '').trim();
+        const canon = state.cadastradorCanonicalByRaw.get(raw) || raw;
+        return canon === filter.value;
+      });
     } else if (filter.type === 'unidade') {
       inRange = inRangeAll.filter(row => {
         const rawCras = (row[fields.cras] || '').trim();

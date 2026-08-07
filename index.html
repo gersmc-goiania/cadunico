@@ -85,7 +85,8 @@
     <div class="ficha-body">
       <h2>Conferência de datas</h2>
       <p class="hint">Correlação entre o dado contido no carimbo de data/hora (quando o formulário foi enviado) com a "Data de Atendimento" digitada à mão. Quando o dia e o mês corresponde com os do carimbo e apenas o ano é divergente, a correção é feita automaticamente. Aparecem na lista abaixo os casos com mais de 180 dias de diferença entre as duas datas; divergências pequenas (atendimento lançado com alguns dias de atraso, por exemplo) são normais e não entram na lista.</p>
-      <div class="top-action">
+      <div class="top-action" style="display:flex; gap:0.8rem; flex-wrap:wrap; align-items:center;">
+        <button class="btn btn-ghost" id="btn-toggle-dates-table" hidden>Mostrar detalhes das datas</button>
         <button class="btn btn-primary" id="btn-to-step4-top">Pular esta etapa e ir para o período →</button>
       </div>
       <div id="dates-summary" class="mini-stats"></div>

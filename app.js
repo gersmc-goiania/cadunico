@@ -766,7 +766,7 @@
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(9.5);
     doc.setTextColor(200, 211, 219);
-    doc.text('Proteção Social Básica · CRAS e Centros de Convivência', margin, 48);
+    doc.text('Prefeitura de Goiânia · Proteção Social Básica · CRAS e Centros de Convivência', margin, 48);
     doc.text(`Período: ${formatDateBR(r.startISO)} a ${formatDateBR(r.endISO)}   ·   Gerado em ${todayBR()}`, margin, 62);
 
     let y = 100;

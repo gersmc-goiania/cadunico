@@ -261,6 +261,36 @@
     { canonical: 'CENTRAL', match: ['CENTRAL', 'POSTO CENTRAL', 'SEMAS'] },
   ];
 
+  // Nomes próprios compostos: quando a 2ª palavra do nome é continuação do
+  // primeiro nome (não é sobrenome), o "primeiro sobrenome" de verdade é a
+  // 3ª palavra. Sem essa lista, "Maria Aparecida Silva" e "Maria Aparecida
+  // Souza" — duas pessoas diferentes — seriam agrupadas como se fossem uma
+  // só. Edite/complete conforme os nomes da sua rede.
+  const COMPOUND_FIRST_NAMES = new Set([
+    'MARIA APARECIDA', 'MARIA JOSE', 'MARIA DE', 'MARIA CRISTINA', 'MARIA HELENA',
+    'MARIA LUCIA', 'MARIA AUXILIADORA', 'MARIA EDUARDA', 'MARIA CLARA',
+    'MARIA ANTONIA', 'MARIA DO', 'MARIA DAS', 'MARIA FERNANDA', 'MARIA ISABEL',
+    'ANA PAULA', 'ANA CAROLINA', 'ANA CRISTINA', 'ANA CLAUDIA', 'ANA LUCIA',
+    'ANA MARIA', 'ANA BEATRIZ', 'ANA FLAVIA', 'ANA LUIZA',
+    'JOSE CARLOS', 'JOSE ROBERTO', 'JOSE MARIA', 'JOSE EDUARDO', 'JOSE ANTONIO',
+    'JOAO PAULO', 'JOAO CARLOS', 'JOAO BATISTA', 'JOAO VICTOR', 'JOAO VITOR',
+    'LUIZ CARLOS', 'LUIZ FERNANDO', 'LUIZ HENRIQUE', 'LUIZ ANTONIO', 'LUIS CARLOS',
+    'CARLOS EDUARDO', 'CARLOS ALBERTO', 'CARLOS HENRIQUE',
+    'PEDRO HENRIQUE', 'ANTONIO CARLOS', 'FRANCISCO DE',
+  ]);
+
+  // Agrupa pelo par "primeiro nome + primeiro sobrenome", ignorando os
+  // sobrenomes seguintes (que na prática são os mais abreviados, esquecidos
+  // ou digitados errado). Se as duas primeiras palavras formam um nome
+  // composto conhecido, usa a 3ª palavra como sobrenome de verdade.
+  function cadastradorNameKey(raw) {
+    const words = softKey(raw).split(' ').filter(Boolean);
+    if (words.length <= 1) return words.join(' ');
+    const firstTwo = words.slice(0, 2).join(' ');
+    const useThree = COMPOUND_FIRST_NAMES.has(firstTwo) && words.length >= 3;
+    return words.slice(0, useThree ? 3 : 2).join(' ');
+  }
+
   // Agrupamento "guloso por centróides": cada nome só é comparado com os
   // representantes JÁ CONSOLIDADOS (processados em ordem de frequência), nunca
   // encadeado através de outras variantes fracas. Isso evita o problema clássico
@@ -358,6 +388,14 @@
   // limiar permissivo aqui juntaria pessoas diferentes por acaso (ex.: nomes
   // curtos como "Mirna" e "Monica"). Por isso usa limiar mais conservador:
   // só considera parecidos nomes com pelo menos 6 letras e distância de 1.
+  // Cadastradores variam grafia entre um preenchimento e outro — mas o padrão
+  // mais comum não é erro de letra isolada, é sobrenome do meio abreviado,
+  // esquecido ou trocado (ex.: "Aparecida Tertuliana Cintra Andrade" vira
+  // "Aparecida Tertuliana C. Andrade" ou só "Aparecida Tertuliana"). Isso
+  // muda muitos caracteres de uma vez, então comparar o nome inteiro por
+  // distância de edição não pega esse caso. Por isso agrupa só pelo par
+  // "primeiro nome + primeiro sobrenome" (função cadastradorNameKey acima) e
+  // ignora o resto.
   function buildCadastradorClustering() {
     const col = state.fields.cadastrador;
     if (!col) { state.cadastradorCanonicalByRaw = new Map(); return; }
@@ -367,7 +405,20 @@
       if (!raw) return;
       displayCounts.set(raw, (displayCounts.get(raw) || 0) + 1);
     });
-    const { rawToCanonical } = clusterByTextSimilarity(displayCounts, [], { minLenForFuzzy: 6, maxDist: 1 });
+
+    const groups = new Map(); // nameKey -> {count, bestRaw, bestCount}
+    displayCounts.forEach((count, raw) => {
+      const key = cadastradorNameKey(raw);
+      if (!groups.has(key)) groups.set(key, { count: 0, bestRaw: raw, bestCount: 0 });
+      const g = groups.get(key);
+      g.count += count;
+      if (count > g.bestCount) { g.bestCount = count; g.bestRaw = raw; } // nome completo mais frequente do grupo vira o rótulo exibido
+    });
+
+    const rawToCanonical = new Map();
+    displayCounts.forEach((count, raw) => {
+      rawToCanonical.set(raw, groups.get(cadastradorNameKey(raw)).bestRaw);
+    });
     state.cadastradorCanonicalByRaw = rawToCanonical;
   }
 

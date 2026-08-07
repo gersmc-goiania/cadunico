@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Relatório de Atendimentos · CRAS</title>
-<meta name="description" content="Gera relatórios de atendimentos do Cadastro Único a partir do export do Google Forms, direto no navegador.">
+<title>Relatório de Atendimentos do Cadastro Único</title>
+<meta name="description" content="Gera relatórios de atendimentos do Cadastro Único a partir do export do Google Forms.">
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -26,11 +26,11 @@
       </svg>
     </div>
     <div class="masthead-text">
-      <p class="eyebrow">Proteção Social Básica · CRAS &amp; Centros de Convivência</p>
+      <p class="eyebrow">Proteção Social Básica</p>
       <h1>Relatório de Atendimentos do Cadastro Único</h1>
     </div>
   </div>
-  <p class="masthead-note">Processa o arquivo exportado do formulário inteiramente no seu navegador. Nada é enviado a servidor algum — os dados, inclusive CPFs, não saem deste computador.</p>
+  <p class="masthead-note">Processa o arquivo exportado do formulário inteiramente no seu navegador. Nada é enviado a servidor externo — os dados, inclusive CPFs, não saem desta sessão</p>
 </header>
 
 <main class="ficha-stack">
@@ -84,9 +84,9 @@
     <div class="ficha-tab"><span class="ficha-number">03</span><span class="ficha-label">Datas</span></div>
     <div class="ficha-body">
       <h2>Conferência de datas</h2>
-      <p class="hint">Comparei o carimbo de data/hora (quando o formulário foi enviado) com a "Data de Atendimento" digitada à mão. Quando o dia e o mês batem com os do carimbo e só o ano está errado, a correção é feita sozinha — esse caso nem aparece aqui. Só aparecem na lista abaixo os casos com mais de 180 dias de diferença entre as duas datas; divergências pequenas (atendimento lançado com alguns dias de atraso, por exemplo) são normais e não entram na lista. Confira e corrija o que precisar — quem não mexer em nada mantém a data original.</p>
+      <p class="hint">Correlação entre o dado contido no carimbo de data/hora (quando o formulário foi enviado) com a "Data de Atendimento" digitada à mão. Quando o dia e o mês corresponde com os do carimbo e apenas o ano é divergente, a correção é feita automaticamente. Aparecem na lista abaixo os casos com mais de 180 dias de diferença entre as duas datas; divergências pequenas (atendimento lançado com alguns dias de atraso, por exemplo) são normais e não entram na lista.</p>
       <div id="dates-summary" class="mini-stats"></div>
-      <div id="dates-empty" class="status-line" hidden>Nenhuma data suspeita encontrada — pode seguir direto para o período.</div>
+      <div id="dates-empty" class="status-line" hidden>Nenhuma data suspeita encontrada.</div>
       <div class="table-wrap" id="dates-table-wrap" hidden>
         <table id="dates-table" class="review-table">
           <thead>
@@ -182,7 +182,7 @@
 </main>
 
 <footer class="site-footer">
-  <p>Gerência de Proteção Social de Média Complexidade · ferramenta interna, sem envio de dados a terceiros.</p>
+  <p>Ferramenta interna, sem envio de dados a terceiros.</p>
 </footer>
 
 <div id="loading-overlay" class="loading-overlay" hidden>

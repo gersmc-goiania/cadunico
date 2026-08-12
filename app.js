@@ -204,12 +204,20 @@
     }
     showLoading('Buscando os dados atualizados da planilha…');
     try {
-      const resp = await fetch(APP_CONFIG.APPS_SCRIPT_URL, {
-        method: 'POST',
-        // text/plain evita o preflight CORS (o Apps Script não responde a OPTIONS).
-        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: JSON.stringify({ idToken }),
-      });
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 25000);
+      let resp;
+      try {
+        resp = await fetch(APP_CONFIG.APPS_SCRIPT_URL, {
+          method: 'POST',
+          // text/plain evita o preflight CORS (o Apps Script não responde a OPTIONS).
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: JSON.stringify({ idToken }),
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(timeoutId);
+      }
       if (!resp.ok) throw new Error('O servidor respondeu com erro (' + resp.status + ').');
       const data = await resp.json();
       if (data.error) {
@@ -229,7 +237,10 @@
       $('#dropzone-sub').textContent = '.zip ou .csv';
     } catch (err) {
       console.error(err);
-      fetchError.textContent = 'Não foi possível buscar os dados: ' + err.message;
+      const msg = err.name === 'AbortError'
+        ? 'O servidor demorou demais para responder (mais de 25s). Confira a URL do Apps Script em config.js e se a implantação está ativa.'
+        : err.message;
+      fetchError.textContent = 'Não foi possível buscar os dados: ' + msg;
       fetchError.hidden = false;
     } finally {
       hideLoading();

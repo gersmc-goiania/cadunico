@@ -61,6 +61,28 @@ body{
   max-width:1240px; margin:0 auto;
   display:flex; align-items:flex-start; gap:0.9rem;
 }
+.masthead-text{flex:1;}
+.masthead-session{
+  display:flex; align-items:center; gap:0.7rem;
+  font-family:var(--font-mono);
+  font-size:0.78rem;
+  color:#C8D3DB;
+  flex-shrink:0;
+  margin-top:0.2rem;
+}
+.masthead-session button{
+  font-family:var(--font-body);
+  font-size:0.78rem;
+  font-weight:600;
+  color:#fff;
+  background:transparent;
+  border:1px solid rgba(255,255,255,0.35);
+  border-radius:2px;
+  padding:0.3rem 0.7rem;
+  cursor:pointer;
+}
+.masthead-session button:hover{background:rgba(255,255,255,0.1);}
+#g_id_signin{margin-bottom:0.4rem;}
 .crest{ color:var(--mustard); flex-shrink:0; width:38px; height:38px; margin-top:4px;}
 .crest svg{width:100%; height:100%;}
 .eyebrow{

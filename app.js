@@ -99,6 +99,128 @@
   }
 
   /* ------------------------------------------------------------------ *
+   * Passo 0 — login com conta Google
+   * ------------------------------------------------------------------ *
+   * A verificação de quem está autorizado acontece no Apps Script
+   * (servidor), nunca aqui. O token guardado no navegador só serve para
+   * provar, a cada busca de dados, "eu sou esta conta Google" — quem
+   * decide se essa conta pode ver os dados é sempre o backend.
+   * ------------------------------------------------------------------ */
+  const SESSION_KEY = 'cadunico_id_token';
+  let idToken = sessionStorage.getItem(SESSION_KEY) || null;
+
+  const loginError = $('#login-error');
+  const mastheadSession = $('#masthead-session');
+  const sessionEmail = $('#session-email');
+
+  function decodeJwtPayload(token) {
+    try {
+      const payload = token.split('.')[1];
+      const json = decodeURIComponent(atob(payload.replace(/-/g, '+').replace(/_/g, '/'))
+        .split('').map(c => '%' + c.charCodeAt(0).toString(16).padStart(2, '0')).join(''));
+      return JSON.parse(json);
+    } catch {
+      return null;
+    }
+  }
+
+  function showLoggedInUI(token) {
+    const payload = decodeJwtPayload(token);
+    $('#step-0').hidden = true;
+    $('#step-1').hidden = false;
+    mastheadSession.hidden = false;
+    sessionEmail.textContent = payload?.email || '';
+    $('#step-1').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  function handleCredentialResponse(response) {
+    idToken = response.credential;
+    sessionStorage.setItem(SESSION_KEY, idToken);
+    loginError.hidden = true;
+    showLoggedInUI(idToken);
+  }
+
+  function logout() {
+    idToken = null;
+    sessionStorage.removeItem(SESSION_KEY);
+    state.rows = [];
+    state.lastReport = null;
+    ['#step-1', '#step-2', '#step-3', '#step-4', '#step-5'].forEach(sel => { $(sel).hidden = true; });
+    $('#step-1').hidden = true;
+    mastheadSession.hidden = true;
+    $('#step-0').hidden = false;
+    if (window.google?.accounts?.id) google.accounts.id.disableAutoSelect();
+    $('#step-0').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+  $('#btn-logout').addEventListener('click', logout);
+
+  if (!window.APP_CONFIG || APP_CONFIG.GOOGLE_CLIENT_ID.startsWith('COLOQUE_AQUI')) {
+    loginError.textContent = 'Login não configurado: falta preencher config.js com o Client ID do Google.';
+    loginError.hidden = false;
+  } else if (window.google?.accounts?.id) {
+    google.accounts.id.initialize({
+      client_id: APP_CONFIG.GOOGLE_CLIENT_ID,
+      callback: handleCredentialResponse,
+    });
+    google.accounts.id.renderButton($('#g_id_signin'), { theme: 'outline', size: 'large', locale: 'pt-BR' });
+    if (idToken) showLoggedInUI(idToken); // já tinha uma sessão válida nesta aba
+  } else {
+    loginError.textContent = 'Não foi possível carregar o login do Google. Verifique sua conexão e recarregue a página.';
+    loginError.hidden = false;
+  }
+
+  /* ------------------------------------------------------------------ *
+   * Passo 1a — buscar dados direto da planilha (via Apps Script)
+   * ------------------------------------------------------------------ */
+  const fetchStatus = $('#fetch-status');
+  const fetchError = $('#fetch-error');
+
+  $('#btn-fetch-sheet').addEventListener('click', fetchFromSheet);
+
+  async function fetchFromSheet() {
+    fetchError.hidden = true;
+    fetchStatus.hidden = true;
+    if (!idToken) { logout(); return; }
+    if (!APP_CONFIG.APPS_SCRIPT_URL || APP_CONFIG.APPS_SCRIPT_URL.startsWith('COLOQUE_AQUI')) {
+      fetchError.textContent = 'Busca não configurada: falta preencher config.js com a URL do Apps Script.';
+      fetchError.hidden = false;
+      return;
+    }
+    showLoading('Buscando os dados atualizados da planilha…');
+    try {
+      const resp = await fetch(APP_CONFIG.APPS_SCRIPT_URL, {
+        method: 'POST',
+        // text/plain evita o preflight CORS (o Apps Script não responde a OPTIONS).
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify({ idToken }),
+      });
+      if (!resp.ok) throw new Error('O servidor respondeu com erro (' + resp.status + ').');
+      const data = await resp.json();
+      if (data.error) {
+        if (/n.o autorizad/i.test(data.error) || /sess.o expirada/i.test(data.error)) {
+          logout();
+          fetchError.textContent = data.error + ' Faça login novamente.';
+          fetchError.hidden = false;
+          return;
+        }
+        throw new Error(data.error);
+      }
+      showLoading('Processando as linhas da planilha…');
+      await new Promise(r => setTimeout(r, 30));
+      parseCsvText(data.csv);
+      fetchStatus.textContent = 'Dados buscados agora, ' + todayBR() + '.';
+      fetchStatus.hidden = false;
+      $('#dropzone-sub').textContent = '.zip ou .csv';
+    } catch (err) {
+      console.error(err);
+      fetchError.textContent = 'Não foi possível buscar os dados: ' + err.message;
+      fetchError.hidden = false;
+    } finally {
+      hideLoading();
+    }
+  }
+
+  /* ------------------------------------------------------------------ *
    * Passo 1 — upload e leitura do arquivo
    * ------------------------------------------------------------------ */
   const fileInput = $('#file-input');

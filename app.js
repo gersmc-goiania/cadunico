@@ -154,19 +154,35 @@
   }
   $('#btn-logout').addEventListener('click', logout);
 
+  // A biblioteca de login do Google carrega em segundo plano (async) e pode
+  // ainda não estar pronta quando este script roda — por isso esperamos de
+  // verdade, em vez de checar só uma vez.
+  function waitForGoogleIdentity(timeoutMs) {
+    return new Promise(function (resolve, reject) {
+      const start = Date.now();
+      (function poll() {
+        if (window.google?.accounts?.id) return resolve();
+        if (Date.now() - start > timeoutMs) return reject(new Error('timeout'));
+        setTimeout(poll, 100);
+      })();
+    });
+  }
+
   if (!window.APP_CONFIG || APP_CONFIG.GOOGLE_CLIENT_ID.startsWith('COLOQUE_AQUI')) {
     loginError.textContent = 'Login não configurado: falta preencher config.js com o Client ID do Google.';
     loginError.hidden = false;
-  } else if (window.google?.accounts?.id) {
-    google.accounts.id.initialize({
-      client_id: APP_CONFIG.GOOGLE_CLIENT_ID,
-      callback: handleCredentialResponse,
-    });
-    google.accounts.id.renderButton($('#g_id_signin'), { theme: 'outline', size: 'large', locale: 'pt-BR' });
-    if (idToken) showLoggedInUI(idToken); // já tinha uma sessão válida nesta aba
   } else {
-    loginError.textContent = 'Não foi possível carregar o login do Google. Verifique sua conexão e recarregue a página.';
-    loginError.hidden = false;
+    waitForGoogleIdentity(8000).then(function () {
+      google.accounts.id.initialize({
+        client_id: APP_CONFIG.GOOGLE_CLIENT_ID,
+        callback: handleCredentialResponse,
+      });
+      google.accounts.id.renderButton($('#g_id_signin'), { theme: 'outline', size: 'large', locale: 'pt-BR' });
+      if (idToken) showLoggedInUI(idToken); // já tinha uma sessão válida nesta aba
+    }).catch(function () {
+      loginError.textContent = 'Não foi possível carregar o login do Google. Verifique sua conexão e recarregue a página.';
+      loginError.hidden = false;
+    });
   }
 
   /* ------------------------------------------------------------------ *

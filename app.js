@@ -131,6 +131,7 @@
     mastheadSession.hidden = false;
     sessionEmail.textContent = payload?.email || '';
     $('#step-1').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    fetchFromSheet(); // busca os dados automaticamente assim que loga
   }
 
   function handleCredentialResponse(response) {

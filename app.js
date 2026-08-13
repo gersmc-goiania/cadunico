@@ -220,19 +220,31 @@
         clearTimeout(timeoutId);
       }
       if (!resp.ok) throw new Error('O servidor respondeu com erro (' + resp.status + ').');
-      const data = await resp.json();
-      if (data.error) {
-        if (/n.o autorizad/i.test(data.error) || /sess.o expirada/i.test(data.error)) {
-          logout();
-          fetchError.textContent = data.error + ' Faça login novamente.';
-          fetchError.hidden = false;
-          return;
+
+      // O Code.gs agora devolve o CSV puro (mais rápido: sem o custo de
+      // embrulhar/desembrulhar um CSV gigante dentro de JSON). Erros
+      // continuam vindo como JSON, então distinguimos pelo Content-Type.
+      const contentType = resp.headers.get('content-type') || '';
+      let csvText;
+      if (contentType.includes('json')) {
+        const data = await resp.json();
+        if (data.error) {
+          if (/n.o autorizad/i.test(data.error) || /sess.o expirada/i.test(data.error)) {
+            logout();
+            fetchError.textContent = data.error + ' Faça login novamente.';
+            fetchError.hidden = false;
+            return;
+          }
+          throw new Error(data.error);
         }
-        throw new Error(data.error);
+        csvText = data.csv; // compatibilidade, caso o Code.gs ainda seja a versão antiga
+      } else {
+        csvText = await resp.text();
       }
+
       showLoading('Processando as linhas da planilha…');
       await new Promise(r => setTimeout(r, 30));
-      parseCsvText(data.csv);
+      parseCsvText(csvText);
       fetchStatus.textContent = 'Dados buscados agora, ' + todayBR() + '.';
       fetchStatus.hidden = false;
       $('#dropzone-sub').textContent = '.zip ou .csv';

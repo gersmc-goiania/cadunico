@@ -206,7 +206,7 @@
     showLoading('Buscando os dados atualizados da planilha…');
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 95000);
+      const timeoutId = setTimeout(() => controller.abort(), 200000);
       let resp;
       try {
         resp = await fetch(APP_CONFIG.APPS_SCRIPT_URL, {

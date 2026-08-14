@@ -46,6 +46,10 @@
     const s = str.trim();
     let m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
     if (m) return `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`;
+    // yyyy/mm/dd (ano primeiro, com barra) — formato que o Code.gs usa para
+    // qualquer célula de Data vinda da busca automática na planilha.
+    m = s.match(/^(\d{4})\/(\d{1,2})\/(\d{1,2})/);
+    if (m) return `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`;
     m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
     if (m) return `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
     return null;
@@ -786,7 +790,23 @@
     toggleBtn.hidden = false;
     toggleBtn.textContent = `Mostrar detalhes das datas (${flagged.length.toLocaleString('pt-BR')})`;
 
-    flagged.forEach(({ row, reason }) => {
+    // Trava de segurança: desenhar dezenas de milhares de linhas de uma vez
+    // pode travar o navegador. Isso não deveria acontecer em uso normal
+    // (a lista é só de casos suspeitos), mas se acontecer — por exemplo,
+    // por um formato de data inesperado — mostramos só uma amostra em vez
+    // de travar a tela, com um aviso.
+    const RENDER_LIMIT = 2000;
+    const toRender = flagged.slice(0, RENDER_LIMIT);
+    if (flagged.length > RENDER_LIMIT) {
+      const trWarn = el('tr');
+      const tdWarn = el('td', { colSpan: 6 });
+      tdWarn.style.fontStyle = 'italic';
+      tdWarn.textContent = `Mostrando os primeiros ${RENDER_LIMIT.toLocaleString('pt-BR')} de ${flagged.length.toLocaleString('pt-BR')} casos — um número tão alto normalmente indica um problema de formato de data em vez de ${flagged.length.toLocaleString('pt-BR')} erros reais de digitação. Vale conferir antes de prosseguir.`;
+      trWarn.appendChild(tdWarn);
+      tbody.appendChild(trWarn);
+    }
+
+    toRender.forEach(({ row, reason }) => {
       const tr = el('tr');
       const tdReason = el('td');
       tdReason.textContent = reason;

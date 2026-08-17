@@ -65,8 +65,10 @@ window.APP_CONFIG = {
 };
 ```
 
-Suba os arquivos (`index.html`, `app.js`, `config.js`, `style.css`) no GitHub
-Pages como já faziam.
+Suba os arquivos (`index.html`, `login.js`, `relatorio.html`, `app.js`,
+`config.js`, `style.css`) no GitHub Pages como já faziam. `index.html` é a
+tela de login; `relatorio.html` é a ferramenta em si — o usuário só chega
+lá depois de logar.
 
 ## 5. Teste
 

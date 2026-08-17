@@ -103,19 +103,26 @@
   }
 
   /* ------------------------------------------------------------------ *
-   * Passo 0 — login com conta Google
-   * ------------------------------------------------------------------ *
-   * A verificação de quem está autorizado acontece no Apps Script
-   * (servidor), nunca aqui. O token guardado no navegador só serve para
-   * provar, a cada busca de dados, "eu sou esta conta Google" — quem
-   * decide se essa conta pode ver os dados é sempre o backend.
+   * Sessão — o login em si acontece em index.html (login.js). Esta página
+   * (relatorio.html) só existe para quem já tem um token guardado; se não
+   * tiver, manda direto para a tela de login, sem mostrar nada daqui.
+   * A verificação de quem está autorizado acontece sempre no Apps Script
+   * (servidor) — o token só prova "eu sou esta conta Google", nunca decide
+   * sozinho se pode ver os dados. Por isso a página inteira fica atrás do
+   * overlay de carregamento até essa verificação (a própria busca dos
+   * dados) terminar — assim não existe um instante em que o relatório
+   * aparece "por engano" antes de confirmar o acesso.
    * ------------------------------------------------------------------ */
   const SESSION_KEY = 'cadunico_id_token';
   let idToken = sessionStorage.getItem(SESSION_KEY) || null;
 
-  const loginError = $('#login-error');
   const mastheadSession = $('#masthead-session');
   const sessionEmail = $('#session-email');
+
+  if (!idToken) {
+    window.location.href = 'index.html';
+    return;
+  }
 
   function decodeJwtPayload(token) {
     try {
@@ -128,66 +135,27 @@
     }
   }
 
-  function showLoggedInUI(token) {
-    const payload = decodeJwtPayload(token);
-    $('#step-0').hidden = true;
-    $('#step-1').hidden = false;
-    mastheadSession.hidden = false;
-    sessionEmail.textContent = payload?.email || '';
-    $('#step-1').scrollIntoView({ behavior: 'smooth', block: 'start' });
-    fetchFromSheet(); // busca os dados automaticamente assim que loga
-  }
-
-  function handleCredentialResponse(response) {
-    idToken = response.credential;
-    sessionStorage.setItem(SESSION_KEY, idToken);
-    loginError.hidden = true;
-    showLoggedInUI(idToken);
+  function goToLogin(erro) {
+    sessionStorage.removeItem(SESSION_KEY);
+    window.location.href = erro ? ('index.html?erro=' + encodeURIComponent(erro)) : 'index.html';
   }
 
   function logout() {
-    idToken = null;
-    sessionStorage.removeItem(SESSION_KEY);
-    state.rows = [];
-    state.lastReport = null;
-    ['#step-1', '#step-2', '#step-3', '#step-4', '#step-5'].forEach(sel => { $(sel).hidden = true; });
-    $('#step-1').hidden = true;
-    mastheadSession.hidden = true;
-    $('#step-0').hidden = false;
-    if (window.google?.accounts?.id) google.accounts.id.disableAutoSelect();
-    $('#step-0').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    goToLogin();
   }
   $('#btn-logout').addEventListener('click', logout);
 
-  // A biblioteca de login do Google carrega em segundo plano (async) e pode
-  // ainda não estar pronta quando este script roda — por isso esperamos de
-  // verdade, em vez de checar só uma vez.
-  function waitForGoogleIdentity(timeoutMs) {
-    return new Promise(function (resolve, reject) {
-      const start = Date.now();
-      (function poll() {
-        if (window.google?.accounts?.id) return resolve();
-        if (Date.now() - start > timeoutMs) return reject(new Error('timeout'));
-        setTimeout(poll, 100);
-      })();
-    });
-  }
-
-  if (!window.APP_CONFIG || APP_CONFIG.GOOGLE_CLIENT_ID.startsWith('COLOQUE_AQUI')) {
-    loginError.textContent = 'Login não configurado: falta preencher config.js com o Client ID do Google.';
-    loginError.hidden = false;
-  } else {
-    waitForGoogleIdentity(8000).then(function () {
-      google.accounts.id.initialize({
-        client_id: APP_CONFIG.GOOGLE_CLIENT_ID,
-        callback: handleCredentialResponse,
-      });
-      google.accounts.id.renderButton($('#g_id_signin'), { theme: 'outline', size: 'large', locale: 'pt-BR' });
-      if (idToken) showLoggedInUI(idToken); // já tinha uma sessão válida nesta aba
-    }).catch(function () {
-      loginError.textContent = 'Não foi possível carregar o login do Google. Verifique sua conexão e recarregue a página.';
-      loginError.hidden = false;
-    });
+  // Só revela a interface do relatório (masthead com e-mail + passo 1) na
+  // primeira vez que a autorização é confirmada com sucesso — chamado de
+  // dentro de fetchFromSheet, nunca antes.
+  let appShellRevealed = false;
+  function revealAppShell() {
+    if (appShellRevealed) return;
+    appShellRevealed = true;
+    const payload = decodeJwtPayload(idToken);
+    mastheadSession.hidden = false;
+    sessionEmail.textContent = payload?.email || '';
+    $('#step-1').hidden = false;
   }
 
   /* ------------------------------------------------------------------ *
@@ -201,13 +169,15 @@
   async function fetchFromSheet() {
     fetchError.hidden = true;
     fetchStatus.hidden = true;
-    if (!idToken) { logout(); return; }
+    if (!idToken) { goToLogin(); return; }
     if (!APP_CONFIG.APPS_SCRIPT_URL || APP_CONFIG.APPS_SCRIPT_URL.startsWith('COLOQUE_AQUI')) {
+      revealAppShell();
+      hideLoading();
       fetchError.textContent = 'Busca não configurada: falta preencher config.js com a URL do Apps Script.';
       fetchError.hidden = false;
       return;
     }
-    showLoading('Buscando os dados atualizados da planilha…');
+    showLoading(appShellRevealed ? 'Buscando os dados atualizados da planilha…' : 'Verificando autorização e buscando dados…');
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 200000);
@@ -234,9 +204,9 @@
         const data = await resp.json();
         if (data.error) {
           if (/n.o autorizad/i.test(data.error) || /sess.o expirada/i.test(data.error)) {
-            logout();
-            fetchError.textContent = data.error + ' Faça login novamente.';
-            fetchError.hidden = false;
+            // Conta não autorizada: nunca chegou a mostrar o relatório —
+            // volta direto para o login, com o motivo, sem passar por aqui.
+            goToLogin(data.error + ' Faça login novamente.');
             return;
           }
           throw new Error(data.error);
@@ -249,11 +219,16 @@
       showLoading('Processando as linhas da planilha…');
       await new Promise(r => setTimeout(r, 30));
       parseCsvText(csvText);
+      revealAppShell();
       fetchStatus.textContent = 'Dados buscados agora, ' + todayBR() + '.';
       fetchStatus.hidden = false;
       $('#dropzone-sub').textContent = '.zip ou .csv';
     } catch (err) {
       console.error(err);
+      // Erro que não é de autorização (servidor fora do ar, timeout, etc.):
+      // não faz sentido mandar de volta pro login, então mostra a própria
+      // tela do relatório com o aviso, para o usuário poder tentar de novo.
+      revealAppShell();
       const msg = err.name === 'AbortError'
         ? 'O servidor demorou demais para responder (mais de 25s). Confira a URL do Apps Script em config.js e se a implantação está ativa.'
         : err.message;
@@ -264,6 +239,10 @@
     }
   }
 
+  // Busca os dados automaticamente ao carregar a página — é isso que, na
+  // prática, confirma (ou não) a autorização desta conta.
+  fetchFromSheet();
+
   /* ------------------------------------------------------------------ *
    * Passo 1 — upload e leitura do arquivo
    * ------------------------------------------------------------------ */
@@ -271,6 +250,12 @@
   const dropzone = $('#dropzone');
   const fileStatus = $('#file-status');
   const fileError = $('#file-error');
+
+  $('#btn-toggle-manual-upload').addEventListener('click', (e) => {
+    const wrap = $('#manual-upload-wrap');
+    wrap.hidden = !wrap.hidden;
+    e.target.textContent = wrap.hidden ? 'Ou envie um arquivo manualmente' : 'Ocultar envio manual';
+  });
 
   ['dragover', 'dragenter'].forEach(ev => dropzone.addEventListener(ev, (e) => {
     e.preventDefault();
@@ -408,9 +393,9 @@
     buildCadastradorClustering();
     renderCrasReviewTable();
     renderCadastradorReviewTable();
+    buildDatesReview();
 
     $('#step-2').hidden = false;
-    $('#step-3').hidden = true;
     $('#step-4').hidden = true;
     $('#step-5').hidden = true;
     $('#step-2').scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -734,14 +719,14 @@
     return map;
   }
 
-  $('#btn-to-step3').addEventListener('click', () => {
-    buildDatesReview();
-    $('#step-3').hidden = false;
-    $('#step-3').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  $('#btn-toggle-cras-table').addEventListener('click', (e) => {
+    const wrap = $('#cras-table-wrap');
+    wrap.hidden = !wrap.hidden;
+    e.target.textContent = wrap.hidden ? 'Mostrar unidades' : 'Ocultar unidades';
   });
 
   /* ------------------------------------------------------------------ *
-   * Passo 3 — conferência de datas (carimbo × data de atendimento)
+   * Passo 2 (continuação) — conferência de datas (carimbo × data de atendimento)
    * ------------------------------------------------------------------ */
   // Só vale a pena revisar manualmente quando a distância entre o carimbo e a
   // data digitada é grande o bastante para indicar erro de digitação (não um
@@ -852,7 +837,6 @@
     $('#step-4').scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
   $('#btn-to-step4').addEventListener('click', goToStep4);
-  $('#btn-to-step4-top').addEventListener('click', goToStep4);
 
   /* ------------------------------------------------------------------ *
    * Passo 4 — tipo de relatório (Geral / por cadastrador / por unidade)
@@ -980,6 +964,7 @@
     const catTotals = {};
     categoryCols.forEach(c => (catTotals[c.key] = 0));
     const crasStats = new Map(); // nome final -> {cpfSet, atendimentos, cats:{}}
+    const cadastradorStats = new Map(); // nome final -> {cpfSet, atendimentos}
 
     inRange.forEach(row => {
       const cpfDigits = digitsOnly(row[fields.cpf] || '');
@@ -994,6 +979,15 @@
       const cs = crasStats.get(crasFinal);
       cs.atendimentos++;
       cs.cpfSet.add(cpfKey);
+
+      if (fields.cadastrador) {
+        const rawCad = (row[fields.cadastrador] || '').trim();
+        const cadFinal = cadastradorMap.get(rawCad) || rawCad || 'NÃO INFORMADO';
+        if (!cadastradorStats.has(cadFinal)) cadastradorStats.set(cadFinal, { cpfSet: new Set(), atendimentos: 0 });
+        const cds = cadastradorStats.get(cadFinal);
+        cds.atendimentos++;
+        cds.cpfSet.add(cpfKey);
+      }
 
       categoryCols.forEach(c => {
         const v = (row[c.header] || '').trim();
@@ -1019,11 +1013,15 @@
       totalCPFs: cpfSet.size,
       totalAtendimentos: inRange.length,
       invalidDate, outOfRange, emptyCPF, unexpectedServiceValues,
-      catTotals, crasStats, rowsOrdered,
+      catTotals, crasStats, cadastradorStats, rowsOrdered,
       crasMap,
       filter,
     };
   }
+
+  // Nome final de cadastrador com pelo menos este número de atendimentos no
+  // período para aparecer na tabela "Por cadastrador" do relatório geral.
+  const CADASTRADOR_MIN_ATENDIMENTOS = 50;
 
   // Texto amigável do filtro aplicado, para título de tela, PDF, XLSX e nome de arquivo.
   function reportTypeLabel(filter) {
@@ -1070,6 +1068,29 @@
     $('#table-cras').innerHTML = buildTableHTML(
       crasHead, crasRows, crasHead.map((_, i) => i > 0), totalRow
     );
+
+    // tabela por cadastrador — só no relatório geral, só quem bateu o mínimo de atendimentos
+    const cadSection = $('#section-cadastrador');
+    if (r.filter.type === 'geral' && state.fields.cadastrador) {
+      cadSection.hidden = false;
+      const qualifying = [...r.cadastradorStats.entries()]
+        .filter(([, cs]) => cs.atendimentos >= CADASTRADOR_MIN_ATENDIMENTOS)
+        .sort((a, b) => b[1].atendimentos - a[1].atendimentos);
+      if (qualifying.length) {
+        $('#table-cadastrador-wrap').hidden = false;
+        $('#cadastrador-table-empty').hidden = true;
+        $('#table-cadastrador').innerHTML = buildTableHTML(
+          ['Cadastrador', 'CPFs distintos', 'Atendimentos'],
+          qualifying.map(([name, cs]) => [name, cs.cpfSet.size, cs.atendimentos]),
+          [false, true, true]
+        );
+      } else {
+        $('#table-cadastrador-wrap').hidden = true;
+        $('#cadastrador-table-empty').hidden = false;
+      }
+    } else {
+      cadSection.hidden = true;
+    }
 
     // avisos de qualidade de dado
     const warnings = [];
@@ -1145,6 +1166,19 @@
     const wsCras = XLSX.utils.aoa_to_sheet(crasAOA);
     wsCras['!cols'] = [{ wch: 32 }, { wch: 16 }, { wch: 14 }, ...state.categoryCols.map(() => ({ wch: 14 }))];
     XLSX.utils.book_append_sheet(wb, wsCras, 'Por CRAS');
+
+    // --- Por Cadastrador (só no relatório geral) ---
+    if (r.filter.type === 'geral' && state.fields.cadastrador) {
+      const qualifying = [...r.cadastradorStats.entries()]
+        .filter(([, cs]) => cs.atendimentos >= CADASTRADOR_MIN_ATENDIMENTOS)
+        .sort((a, b) => b[1].atendimentos - a[1].atendimentos);
+      const cadHead = ['Cadastrador', 'CPFs distintos', 'Atendimentos'];
+      const cadAOA = [cadHead, ...qualifying.map(([name, cs]) => [name, cs.cpfSet.size, cs.atendimentos])];
+      if (!qualifying.length) cadAOA.push([`Nenhum cadastrador atingiu ${CADASTRADOR_MIN_ATENDIMENTOS} atendimentos no período.`, '', '']);
+      const wsCad = XLSX.utils.aoa_to_sheet(cadAOA);
+      wsCad['!cols'] = [{ wch: 32 }, { wch: 16 }, { wch: 14 }];
+      XLSX.utils.book_append_sheet(wb, wsCad, 'Por Cadastrador');
+    }
 
     // --- Dados detalhados ---
     const { fields } = state;
@@ -1305,6 +1339,36 @@
       },
     });
 
+    // por cadastrador (só no relatório geral)
+    if (r.filter.type === 'geral' && state.fields.cadastrador) {
+      let yCad = doc.lastAutoTable.finalY + 24;
+      if (yCad > doc.internal.pageSize.getHeight() - 150) { doc.addPage(); yCad = 50; }
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(11);
+      doc.text('Por cadastrador (50+ atendimentos no período)', margin, yCad);
+      yCad += 6;
+
+      const qualifying = [...r.cadastradorStats.entries()]
+        .filter(([, cs]) => cs.atendimentos >= CADASTRADOR_MIN_ATENDIMENTOS)
+        .sort((a, b) => b[1].atendimentos - a[1].atendimentos);
+
+      if (qualifying.length) {
+        doc.autoTable({
+          startY: yCad + 6,
+          margin: { left: margin, right: margin },
+          head: [['Cadastrador', 'CPFs distintos', 'Atendimentos']],
+          body: qualifying.map(([name, cs]) => [name, cs.cpfSet.size.toLocaleString('pt-BR'), cs.atendimentos.toLocaleString('pt-BR')]),
+          headStyles: { fillColor: navy, fontSize: 8.5 },
+          styles: { fontSize: 8.5, cellPadding: 4 },
+          columnStyles: { 1: { halign: 'right' }, 2: { halign: 'right' } },
+        });
+      } else {
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(9.5);
+        doc.text(`Nenhum cadastrador atingiu ${CADASTRADOR_MIN_ATENDIMENTOS} atendimentos neste período.`, margin, yCad + 14);
+      }
+    }
+
     // observações
     const warnings = [];
     if (r.invalidDate) warnings.push(`${r.invalidDate} registro(s) com data ilegível não entraram no relatório.`);
@@ -1350,7 +1414,6 @@
     $('#dropzone-sub').textContent = '.zip ou .csv';
     fileStatus.hidden = true;
     $('#step-2').hidden = true;
-    $('#step-3').hidden = true;
     $('#step-4').hidden = true;
     $('#step-5').hidden = true;
     $('#step-1').scrollIntoView({ behavior: 'smooth', block: 'start' });

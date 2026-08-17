@@ -23,11 +23,13 @@ arquivo contém dado pessoal sensível (CPF).
    Isso não trava o passo seguinte.
 3. **Período** — escolhe a data inicial e final.
 4. **Relatório** — mostra na tela e permite baixar:
-   - **`.xlsx`** com 4 abas: Resumo, Por CRAS, Dados detalhados (linha a
-     linha, ordenado por data, com CPF) e Notas (metodologia +
-     agrupamento de unidades usado).
-   - **`.pdf`** com o resumo geral, por categoria e por unidade — pronto
-     para levar à secretária ou ao prefeito.
+   - **`.xlsx`** com Resumo, Por CRAS, Por Cadastrador (só no relatório
+     geral, e só quem tem 50+ atendimentos no período — ver abaixo),
+     Dados detalhados (linha a linha, ordenado por data, com CPF) e
+     Notas (metodologia + agrupamento de unidades usado).
+   - **`.pdf`** com o resumo geral, por categoria, por unidade e por
+     cadastrador (no relatório geral) — pronto para levar à secretária
+     ou ao prefeito.
 
 ### Como os números são contados
 
@@ -40,6 +42,11 @@ arquivo contém dado pessoal sensível (CPF).
   esperado e está anotado no próprio relatório.
 - Registros sem CPF preenchido são contados individualmente (não são
   somados a nenhum outro CPF em branco).
+- No **relatório geral**, a tabela "Por Cadastrador" mostra só quem tem
+  **50 ou mais atendimentos** no período selecionado, em ordem
+  decrescente de atendimentos — cadastradores abaixo desse número não
+  aparecem nela (o objetivo é destacar quem realmente atende em volume,
+  não listar todo mundo).
 
 ## Como publicar no GitHub Pages
 
@@ -48,9 +55,9 @@ arquivo contém dado pessoal sensível (CPF).
    repositório privado, dentro dos planos que oferecem isso; num plano
    sem essa opção, use um repositório público, o que não é problema
    porque nenhum dado do CRAS fica no código, só a ferramenta).
-2. Suba os três arquivos deste projeto (`index.html`, `style.css`,
-   `app.js`) para a raiz do repositório (ou para uma pasta `docs/`, como
-   preferir).
+2. Suba os arquivos deste projeto (`index.html`, `login.js`,
+   `relatorio.html`, `app.js`, `style.css`, `config.js`) para a raiz do
+   repositório (ou para uma pasta `docs/`, como preferir).
 3. No repositório, vá em **Settings → Pages**.
 4. Em **Source**, selecione a branch (geralmente `main`) e a pasta
    (`/root` ou `/docs`, conforme onde você colocou os arquivos).
@@ -79,8 +86,22 @@ leitura de csv, geração de xlsx e geração de pdf).
 ## Estrutura dos arquivos
 
 ```
-index.html   → estrutura da página e dos 4 passos
-style.css    → identidade visual
-app.js       → toda a lógica: leitura do arquivo, agrupamento de
-               unidades, cálculo do relatório, exportação xlsx/pdf
+index.html      → tela de login (conta Google), nada mais
+login.js        → lógica do login; ao logar, guarda o token e manda
+                   para relatorio.html
+relatorio.html  → a ferramenta em si — passos 1 a 4 do relatório
+app.js          → toda a lógica do relatório: confere a sessão,
+                   busca/lê o arquivo, agrupamento de unidades e de
+                   cadastradores, cálculo do relatório, exportação
+                   xlsx/pdf
+style.css       → identidade visual (compartilhada pelas duas páginas)
+config.js       → Client ID do Google e URL do Apps Script
 ```
+
+O login e o relatório ficam em páginas separadas: `index.html` só cuida do
+login; assim que a conta Google é confirmada no navegador, a pessoa é
+levada para `relatorio.html`, que então busca os dados e só então confirma
+(no servidor) se a conta está realmente autorizada. Enquanto isso não é
+confirmado, a página do relatório fica atrás de uma tela de carregamento —
+não existe mais aquele instante em que o relatório aparece e, alguns
+segundos depois, volta para o login.

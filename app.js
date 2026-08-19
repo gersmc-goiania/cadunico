@@ -980,11 +980,12 @@
       cs.atendimentos++;
       cs.cpfSet.add(cpfKey);
 
+      let cds = null;
       if (fields.cadastrador) {
         const rawCad = (row[fields.cadastrador] || '').trim();
         const cadFinal = cadastradorMap.get(rawCad) || rawCad || 'NÃO INFORMADO';
-        if (!cadastradorStats.has(cadFinal)) cadastradorStats.set(cadFinal, { cpfSet: new Set(), atendimentos: 0 });
-        const cds = cadastradorStats.get(cadFinal);
+        if (!cadastradorStats.has(cadFinal)) cadastradorStats.set(cadFinal, { cpfSet: new Set(), atendimentos: 0, cats: {} });
+        cds = cadastradorStats.get(cadFinal);
         cds.atendimentos++;
         cds.cpfSet.add(cpfKey);
       }
@@ -995,6 +996,7 @@
         if (v.toUpperCase() === 'SIM') {
           catTotals[c.key]++;
           cs.cats[c.key] = (cs.cats[c.key] || 0) + 1;
+          if (cds) cds.cats[c.key] = (cds.cats[c.key] || 0) + 1;
         } else {
           unexpectedServiceValues++;
         }
@@ -1079,10 +1081,11 @@
       if (qualifying.length) {
         $('#table-cadastrador-wrap').hidden = false;
         $('#cadastrador-table-empty').hidden = true;
+        const cadHead = ['Cadastrador', 'CPFs distintos', 'Atendimentos', ...state.categoryCols.map(c => c.label)];
         $('#table-cadastrador').innerHTML = buildTableHTML(
-          ['Cadastrador', 'CPFs distintos', 'Atendimentos'],
-          qualifying.map(([name, cs]) => [name, cs.cpfSet.size, cs.atendimentos]),
-          [false, true, true]
+          cadHead,
+          qualifying.map(([name, cs]) => [name, cs.cpfSet.size, cs.atendimentos, ...state.categoryCols.map(c => cs.cats[c.key] || 0)]),
+          cadHead.map((_, i) => i > 0)
         );
       } else {
         $('#table-cadastrador-wrap').hidden = true;
@@ -1172,11 +1175,11 @@
       const qualifying = [...r.cadastradorStats.entries()]
         .filter(([, cs]) => cs.atendimentos >= CADASTRADOR_MIN_ATENDIMENTOS)
         .sort((a, b) => b[1].atendimentos - a[1].atendimentos);
-      const cadHead = ['Cadastrador', 'CPFs distintos', 'Atendimentos'];
-      const cadAOA = [cadHead, ...qualifying.map(([name, cs]) => [name, cs.cpfSet.size, cs.atendimentos])];
-      if (!qualifying.length) cadAOA.push([`Nenhum cadastrador atingiu ${CADASTRADOR_MIN_ATENDIMENTOS} atendimentos no período.`, '', '']);
+      const cadHead = ['Cadastrador', 'CPFs distintos', 'Atendimentos', ...state.categoryCols.map(c => c.label)];
+      const cadAOA = [cadHead, ...qualifying.map(([name, cs]) => [name, cs.cpfSet.size, cs.atendimentos, ...state.categoryCols.map(c => cs.cats[c.key] || 0)])];
+      if (!qualifying.length) cadAOA.push([`Nenhum cadastrador atingiu ${CADASTRADOR_MIN_ATENDIMENTOS} atendimentos no período.`, '', '', ...state.categoryCols.map(() => '')]);
       const wsCad = XLSX.utils.aoa_to_sheet(cadAOA);
-      wsCad['!cols'] = [{ wch: 32 }, { wch: 16 }, { wch: 14 }];
+      wsCad['!cols'] = [{ wch: 32 }, { wch: 16 }, { wch: 14 }, ...state.categoryCols.map(() => ({ wch: 14 }))];
       XLSX.utils.book_append_sheet(wb, wsCad, 'Por Cadastrador');
     }
 
@@ -1353,14 +1356,21 @@
         .sort((a, b) => b[1].atendimentos - a[1].atendimentos);
 
       if (qualifying.length) {
+        const cadHeadPdf = ['Cadastrador', 'CPFs distintos', 'Atendimentos', ...state.categoryCols.map(c => c.label)];
+        const cadBodyPdf = qualifying.map(([name, cs]) => [
+          name, cs.cpfSet.size.toLocaleString('pt-BR'), cs.atendimentos.toLocaleString('pt-BR'),
+          ...state.categoryCols.map(c => (cs.cats[c.key] || 0).toLocaleString('pt-BR')),
+        ]);
+        const cadColumnStyles = {};
+        cadHeadPdf.forEach((_, i) => { if (i > 0) cadColumnStyles[i] = { halign: 'right' }; });
         doc.autoTable({
           startY: yCad + 6,
           margin: { left: margin, right: margin },
-          head: [['Cadastrador', 'CPFs distintos', 'Atendimentos']],
-          body: qualifying.map(([name, cs]) => [name, cs.cpfSet.size.toLocaleString('pt-BR'), cs.atendimentos.toLocaleString('pt-BR')]),
+          head: [cadHeadPdf],
+          body: cadBodyPdf,
           headStyles: { fillColor: navy, fontSize: 8.5 },
           styles: { fontSize: 8.5, cellPadding: 4 },
-          columnStyles: { 1: { halign: 'right' }, 2: { halign: 'right' } },
+          columnStyles: cadColumnStyles,
         });
       } else {
         doc.setFont('helvetica', 'normal');
